@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数]
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -11,6 +11,9 @@ WHISPER_SH="$HOME/.voicemode/services/whisper/bin/start-whisper-server.sh"
 KOKORO_SH="$HOME/.voicemode/services/kokoro/start-gpu_mac.sh"
 WHISPER_URL="http://127.0.0.1:2022/health"
 KOKORO_URL="http://127.0.0.1:8880/v1/audio/voices"
+CAPTION_SRC="$(dirname "$0")/caption.swift"
+CAPTION_BIN="$HOME/.voicemode/10-voice-caption"
+CAPTION_FILE="$HOME/.voicemode/10-voice-captions.txt"   # listen.py の CAPTION_PATH と同じ
 
 die() { echo "エラー: $*" >&2; exit 1; }
 
@@ -88,14 +91,50 @@ status_one() { # 名前 確認用URL ポート
   if up "$2"; then echo "$1: 起動中($(listen_addr "$3"))"; else echo "$1: 停止中"; fi
 }
 
+caption_running() { pgrep -f "$CAPTION_BIN $CAPTION_FILE" >/dev/null 2>&1; }
+
+# 字幕の窓を出す。失敗しても会話はできるので、エラーでは止めない。
+caption_on() {
+  if [ ! -x "$CAPTION_BIN" ] || [ "$CAPTION_SRC" -nt "$CAPTION_BIN" ]; then
+    command -v swiftc >/dev/null 2>&1 || { echo "字幕: swiftc がないため表示しません(Xcode のコマンドラインツールが必要)"; return 0; }
+    # 別名でビルドし、成功したときだけ入れ替える。失敗しても、動いている窓は残す
+    if ! swiftc -O -o "$CAPTION_BIN.new" "$CAPTION_SRC" 2>"$CAPTION_BIN.err"; then
+      echo "字幕: ビルドに失敗しました。以前の版があれば、それを使います"
+      grep -m 3 'error:' "$CAPTION_BIN.err"
+      rm -f "$CAPTION_BIN.new"
+      [ -x "$CAPTION_BIN" ] || return 0
+    else
+      pkill -f "$CAPTION_BIN $CAPTION_FILE" >/dev/null 2>&1
+      mv "$CAPTION_BIN.new" "$CAPTION_BIN"
+    fi
+    rm -f "$CAPTION_BIN.err"
+  fi
+  touch "$CAPTION_FILE" && chmod 600 "$CAPTION_FILE"
+  if caption_running; then
+    echo "字幕: すでに表示しています"
+  else
+    nohup "$CAPTION_BIN" "$CAPTION_FILE" >/dev/null 2>&1 &
+    echo "字幕: 表示しました"
+  fi
+}
+
+# 字幕の窓を閉じ、字幕のファイルを消す。
+caption_off() {
+  pkill -f "$CAPTION_BIN $CAPTION_FILE" >/dev/null 2>&1
+  rm -f "$CAPTION_FILE"
+  echo "字幕: 閉じました"
+}
+
 case "${1:-}" in
   on)
     check_privacy
     fix_bind
     start_one whisper "$WHISPER_URL" 2022
     start_one kokoro "$KOKORO_URL" 8880
+    caption_on
     ;;
   off)
+    caption_off
     stop_one whisper 2022
     stop_one kokoro 8880
     ;;
@@ -110,8 +149,15 @@ case "${1:-}" in
     up "$WHISPER_URL" || die "Whisper が起動していません。先に '$0 on' を実行してください"
     exec "$PY" "$(dirname "$0")/listen.py" "$@"
     ;;
+  captions)
+    case "${2:-}" in
+      on) caption_on ;;
+      off) caption_off ;;
+      *) echo "使い方: $0 captions on | off" >&2; exit 2 ;;
+    esac
+    ;;
   *)
-    echo "使い方: $0 on | off | status | listen" >&2
+    echo "使い方: $0 on | off | status | listen | captions on|off" >&2
     exit 2
     ;;
 esac

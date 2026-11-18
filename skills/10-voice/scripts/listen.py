@@ -12,7 +12,8 @@ voice.sh listen から、VoiceMode と一緒に入っている Python で実行�
 
 - 送信先は Mac 内の Whisper と Kokoro に固定している。変更する引数は設けない
 - 音声はメモリ上だけで扱い、ファイルに保存しない
-- 認識した文字は標準出力にだけ出す
+- 認識した文字は、標準出力と、Mac 内の字幕のファイル(本人だけが読める)に出す。
+  字幕のファイルは直近の分だけを残し、voice.sh off で消える
 """
 
 from __future__ import annotations
@@ -63,6 +64,11 @@ CUE_END = "/System/Library/Sounds/Glass.aiff"
 LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice.lock")
 LOCK_WAIT_S = 90
 
+# 字幕。読み上げた文と聞き取った文を書き、字幕の窓(caption.swift)が表示する。
+# voice.sh の CAPTION_FILE と同じ場所
+CAPTION_PATH = os.path.expanduser("~/.voicemode/10-voice-captions.txt")
+CAPTION_KEEP_LINES = 60
+
 BOUNDARY = r"\s。、．，.,!?！？…・"
 # 間をおかずに「どうぞ以上」と言われても終わりとみなすための、文末らしい文字。
 # 「これ以上」「3つ以上」「今まで以上」「必要以上」の直前の文字は含めない
@@ -109,6 +115,23 @@ def acquire_turn(name: str):
     f.write(name)
     f.flush()
     return f, bool(last) and last != name
+
+
+def caption(name: str, who: str, text: str) -> None:
+    """字幕のファイルに 1 行足す。字幕が書けなくても会話は止めない。"""
+    if not text:
+        return
+    try:
+        line = f"{time.strftime('%H:%M')} [{name}] {who}: {' '.join(text.split())}\n"
+        fd = os.open(CAPTION_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            lines = f.readlines()[-(CAPTION_KEEP_LINES - 1):] + [line]
+            f.seek(0)
+            f.truncate()
+            f.writelines(lines)
+    except OSError:
+        pass
 
 
 def session_name() -> str:
@@ -321,6 +344,7 @@ def main() -> int:
 
     def on_ready() -> None:
         if speaker:
+            caption(args.name, "Claude", args.say)
             speaker.start()
         else:
             play(CUE_START)
@@ -424,6 +448,12 @@ def main() -> int:
 
     if not from_file:
         play(CUE_END)
+        said = " ".join(texts)
+        if barged:
+            said = f"(読み上げに割り込み){said}"
+        if reason == "mute":
+            said += "(ミュート)"
+        caption(args.name, "あなた", said)
     if speaker and speaker.error:
         print(f"[読み上げに失敗しました: {speaker.error}]")
     if barged:
