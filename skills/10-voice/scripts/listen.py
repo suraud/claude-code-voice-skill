@@ -62,7 +62,9 @@ CUE_END = "/System/Library/Sounds/Glass.aiff"
 # 複数のセッションで同時に使うときの順番待ち。ロックを持つセッションだけが話して聞く。
 # ロックはプロセスが終わると自動で外れる。ファイルには、最後に使ったセッションの名前だけを書く
 LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice.lock")
-LOCK_WAIT_S = 90
+LOCK_WAIT_S = 240    # 順番を待つ上限。超えたら、読み上げずに戻る
+FLOOR_HOLD_S = 120   # 時間切れのあと、同じセッションが聞き取りを再開するまで順番を取っておく秒数
+TOTAL_LIMIT_S = 540  # 順番待ちと聞き取りを合わせた上限(コマンドの制限時間 600 秒に収める)
 
 # 字幕。読み上げた文と聞き取った文を書き、字幕の窓(caption.swift)が表示する。
 # voice.sh の CAPTION_DIR と同じ場所。日付ごとのファイル(YYYY-MM-DD.txt)に追記し、消さない
@@ -90,30 +92,65 @@ def end_pattern(word: str) -> re.Pattern:
     )
 
 
-def acquire_turn(name: str):
-    """順番を取る。戻り値は (ロックのファイル, 直前に使ったのが別のセッションか)。
+def read_floor(f) -> tuple[str, float, bool]:
+    """ロックのファイルから (会話中のセッション名, 最後に話し終えた時刻, 会話が続いているか) を読む。"""
+    f.seek(0)
+    parts = f.read().strip().split("\t")
+    try:
+        return parts[0], float(parts[1]), parts[2] == "1"
+    except (IndexError, ValueError):
+        return (parts[0] if parts else ""), 0.0, False
 
-    LOCK_WAIT_S 待っても取れなければ (None, False) を返す。
+
+def write_floor(f, name: str, active: bool) -> None:
+    f.seek(0)
+    f.truncate()
+    f.write(f"{name}\t{time.time():.0f}\t{1 if active else 0}")
+    f.flush()
+
+
+def acquire_turn(name: str):
+    """順番を取る。戻り値は (ロックのファイル, 直前に使ったのが別のセッションか, 待った秒数)。
+
+    ロックは 2 段になっている。
+    - ファイルのロック(flock): 話している、または聞いている間だけ持つ。プロセスが終わると外れる
+    - 利用者の番: ファイルの中身に書く。利用者が「以上」を言わないまま聞き取りが時間切れになったとき、
+      そのセッションが順番を持ち続ける。利用者が考えている間に、ほかのセッションが話しかけないため。
+      同じセッションが聞き取りを再開しないまま FLOOR_HOLD_S 秒たつと、ほかのセッションも話せる
+    - 「以上」で話し終えたあと(Claude が作業している間)は、早い者勝ちで、ほかのセッションも話せる
+
+    LOCK_WAIT_S 待っても取れなければ (None, False, 待った秒数) を返す。
     """
+    start = time.time()
     f = open(LOCK_PATH, "a+", encoding="utf-8")
     os.chmod(LOCK_PATH, 0o600)
-    deadline = time.time() + LOCK_WAIT_S
     while True:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
+            holder, last, active = read_floor(f)
+            others_turn = bool(holder) and holder != name and active and time.time() - last < FLOOR_HOLD_S
+            if not others_turn:
+                write_floor(f, name, True)
+                return f, bool(holder) and holder != name, time.time() - start
+            fcntl.flock(f, fcntl.LOCK_UN)
         except OSError:
-            if time.time() >= deadline:
-                f.close()
-                return None, False
-            time.sleep(0.2)
-    f.seek(0)
-    last = f.read().strip()
-    f.seek(0)
-    f.truncate()
-    f.write(name)
-    f.flush()
-    return f, bool(last) and last != name
+            pass
+        if time.time() - start >= LOCK_WAIT_S:
+            f.close()
+            return None, False, time.time() - start
+        time.sleep(0.3)
+
+
+def release_turn(name: str) -> None:
+    """会話の順番を手放す。ほかのセッションが、待たずに話せるようになる。"""
+    try:
+        with open(LOCK_PATH, "a+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            holder, _, _ = read_floor(f)
+            if holder == name:
+                write_floor(f, name, False)
+    except OSError:
+        pass
 
 
 def caption(name: str, who: str, text: str) -> None:
@@ -272,11 +309,16 @@ def main() -> int:
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
     ap.add_argument("--name", default=session_name(), help="このセッションの呼び名(既定: 作業フォルダの名前)")
     ap.add_argument("--end-word", default="以上", help="発言の終わりを示す合言葉(既定: 以上)")
-    ap.add_argument("--idle", type=float, default=60, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 60)")
+    ap.add_argument("--idle", type=float, default=300, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 300)")
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
+    ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--file", help="検証用。マイクの代わりに WAV ファイルを読む")
     ap.add_argument("--verbose", action="store_true", help="区切りごとの認識結果を標準エラーに出す")
     args = ap.parse_args()
+
+    if args.release:
+        release_turn(args.name)
+        return 0
 
     pattern = end_pattern(args.end_word)
     vad = webrtcvad.Vad(3)
@@ -333,10 +375,11 @@ def main() -> int:
     lock = None
     say = args.say
     if not from_file:
-        lock, switched = acquire_turn(args.name)
+        lock, switched, waited = acquire_turn(args.name)
         if lock is None:
             print(f"[順番待ち: ほかのセッションが音声で会話中のため、{LOCK_WAIT_S} 秒待っても始められませんでした。読み上げていません]")
             return 0
+        args.max = min(args.max, TOTAL_LIMIT_S - waited)
         if switched and say:
             say = f"{args.name}、からです。{say}"  # 別のセッションから切り替わったときは名乗る
     speaker = Speaker(say) if say and not from_file else None
@@ -445,6 +488,10 @@ def main() -> int:
             print("\n".join(texts))
         return 1
 
+    if lock is not None:
+        # 利用者が話し終えていない(時間切れ)なら、順番を持ち続ける。同じセッションが聞き取りを再開する。
+        # 「以上」やミュートで終わったら手放し、ほかのセッションも話せるようにする
+        write_floor(lock, args.name, reason in ("idle", "max"))
     if not from_file:
         play(CUE_END)
         said = " ".join(texts)

@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | captions on|off
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | release | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -148,6 +148,11 @@ case "${1:-}" in
     up "$WHISPER_URL" || die "Whisper が起動していません。先に '$0 on' を実行してください"
     exec "$PY" "$(dirname "$0")/listen.py" "$@"
     ;;
+  release)
+    # 時間切れのあとに持ち続けている順番を手放す。ほかのセッションが、待たずに話せるようになる。
+    [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
+    exec "$PY" "$(dirname "$0")/listen.py" --release
+    ;;
   captions)
     case "${2:-}" in
       on) caption_on ;;
@@ -156,7 +161,7 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "使い方: $0 on | off | status | listen | captions on|off" >&2
+    echo "使い方: $0 on | off | status | listen | release | captions on|off" >&2
     exit 2
     ;;
 esac
