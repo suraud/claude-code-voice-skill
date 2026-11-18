@@ -13,7 +13,7 @@ voice.sh listen から、VoiceMode と一緒に入っている Python で実行�
 - 送信先は Mac 内の Whisper と Kokoro に固定している。変更する引数は設けない
 - 音声はメモリ上だけで扱い、ファイルに保存しない
 - 認識した文字は、標準出力と、Mac 内の字幕のファイル(本人だけが読める)に出す。
-  字幕のファイルは直近の分だけを残し、voice.sh off で消える
+  字幕のファイルは日付ごとに分け、消さずに残す
 """
 
 from __future__ import annotations
@@ -65,9 +65,8 @@ LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice.lock")
 LOCK_WAIT_S = 90
 
 # 字幕。読み上げた文と聞き取った文を書き、字幕の窓(caption.swift)が表示する。
-# voice.sh の CAPTION_FILE と同じ場所
-CAPTION_PATH = os.path.expanduser("~/.voicemode/10-voice-captions.txt")
-CAPTION_KEEP_LINES = 60
+# voice.sh の CAPTION_DIR と同じ場所。日付ごとのファイル(YYYY-MM-DD.txt)に追記し、消さない
+CAPTION_DIR = os.path.expanduser("~/.voicemode/10-voice-captions")
 
 BOUNDARY = r"\s。、．，.,!?！？…・"
 # 間をおかずに「どうぞ以上」と言われても終わりとみなすための、文末らしい文字。
@@ -122,14 +121,14 @@ def caption(name: str, who: str, text: str) -> None:
     if not text:
         return
     try:
-        line = f"{time.strftime('%H:%M')} [{name}] {who}: {' '.join(text.split())}\n"
-        fd = os.open(CAPTION_PATH, os.O_RDWR | os.O_CREAT, 0o600)
-        with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        # 1 行 1 発言。「時刻<TAB>セッション名<TAB>話し手<TAB>本文」(caption.swift が読む)
+        line = "\t".join([time.strftime("%H:%M"), " ".join(name.split()), who, " ".join(text.split())]) + "\n"
+        os.makedirs(CAPTION_DIR, mode=0o700, exist_ok=True)
+        path = os.path.join(CAPTION_DIR, time.strftime("%Y-%m-%d") + ".txt")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
-            lines = f.readlines()[-(CAPTION_KEEP_LINES - 1):] + [line]
-            f.seek(0)
-            f.truncate()
-            f.writelines(lines)
+            f.write(line)
     except OSError:
         pass
 

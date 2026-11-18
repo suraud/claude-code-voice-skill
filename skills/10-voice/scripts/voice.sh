@@ -13,7 +13,7 @@ WHISPER_URL="http://127.0.0.1:2022/health"
 KOKORO_URL="http://127.0.0.1:8880/v1/audio/voices"
 CAPTION_SRC="$(dirname "$0")/caption.swift"
 CAPTION_BIN="$HOME/.voicemode/10-voice-caption"
-CAPTION_FILE="$HOME/.voicemode/10-voice-captions.txt"   # listen.py の CAPTION_PATH と同じ
+CAPTION_DIR="$HOME/.voicemode/10-voice-captions"   # listen.py の CAPTION_DIR と同じ。日付ごとのファイルが入る
 
 die() { echo "エラー: $*" >&2; exit 1; }
 
@@ -91,7 +91,7 @@ status_one() { # 名前 確認用URL ポート
   if up "$2"; then echo "$1: 起動中($(listen_addr "$3"))"; else echo "$1: 停止中"; fi
 }
 
-caption_running() { pgrep -f "$CAPTION_BIN $CAPTION_FILE" >/dev/null 2>&1; }
+caption_running() { pgrep -f "$CAPTION_BIN $CAPTION_DIR" >/dev/null 2>&1; }
 
 # 字幕の窓を出す。失敗しても会話はできるので、エラーでは止めない。
 caption_on() {
@@ -104,24 +104,23 @@ caption_on() {
       rm -f "$CAPTION_BIN.new"
       [ -x "$CAPTION_BIN" ] || return 0
     else
-      pkill -f "$CAPTION_BIN $CAPTION_FILE" >/dev/null 2>&1
+      pkill -f "$CAPTION_BIN " >/dev/null 2>&1
       mv "$CAPTION_BIN.new" "$CAPTION_BIN"
     fi
     rm -f "$CAPTION_BIN.err"
   fi
-  touch "$CAPTION_FILE" && chmod 600 "$CAPTION_FILE"
+  mkdir -p "$CAPTION_DIR" && chmod 700 "$CAPTION_DIR"
   if caption_running; then
     echo "字幕: すでに表示しています"
   else
-    nohup "$CAPTION_BIN" "$CAPTION_FILE" >/dev/null 2>&1 &
+    nohup "$CAPTION_BIN" "$CAPTION_DIR" >/dev/null 2>&1 &
     echo "字幕: 表示しました"
   fi
 }
 
-# 字幕の窓を閉じ、字幕のファイルを消す。
+# 字幕の窓を閉じる。字幕のファイルは残す。
 caption_off() {
-  pkill -f "$CAPTION_BIN $CAPTION_FILE" >/dev/null 2>&1
-  rm -f "$CAPTION_FILE"
+  pkill -f "$CAPTION_BIN " >/dev/null 2>&1
   echo "字幕: 閉じました"
 }
 
