@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | release | captions on|off
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | release | end | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -13,6 +13,7 @@ WHISPER_URL="http://127.0.0.1:2022/health"
 KOKORO_URL="http://127.0.0.1:8880/v1/audio/voices"
 CAPTION_SRC="$(dirname "$0")/caption.swift"
 CAPTION_BIN="$HOME/.voicemode/10-voice-caption"
+SESSIONS_FILE="$HOME/.voicemode/10-voice-sessions.json"   # listen.py の SESSIONS_PATH と同じ
 CAPTION_DIR="$HOME/.voicemode/10-voice-captions"   # listen.py の CAPTION_DIR と同じ。日付ごとのファイルが入る
 
 die() { echo "エラー: $*" >&2; exit 1; }
@@ -113,7 +114,7 @@ caption_on() {
   if caption_running; then
     echo "字幕: すでに表示しています"
   else
-    nohup "$CAPTION_BIN" "$CAPTION_DIR" >/dev/null 2>&1 &
+    nohup "$CAPTION_BIN" "$CAPTION_DIR" "$SESSIONS_FILE" >/dev/null 2>&1 &
     echo "字幕: 表示しました"
   fi
 }
@@ -153,6 +154,11 @@ case "${1:-}" in
     [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
     exec "$PY" "$(dirname "$0")/listen.py" --release
     ;;
+  end)
+    # 音声での会話を終える。順番を手放し、字幕の窓のタブから、このセッションを消す。
+    [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
+    exec "$PY" "$(dirname "$0")/listen.py" --end
+    ;;
   captions)
     case "${2:-}" in
       on) caption_on ;;
@@ -161,7 +167,7 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "使い方: $0 on | off | status | listen | release | captions on|off" >&2
+    echo "使い方: $0 on | off | status | listen | release | end | captions on|off" >&2
     exit 2
     ;;
 esac

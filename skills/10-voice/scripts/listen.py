@@ -23,6 +23,7 @@ import array
 import collections
 import fcntl
 import io
+import json
 import os
 import queue
 import re
@@ -62,7 +63,8 @@ CUE_END = "/System/Library/Sounds/Glass.aiff"
 # 複数のセッションで同時に使うときの順番待ち。ロックを持つセッションだけが話して聞く。
 # ロックはプロセスが終わると自動で外れる。ファイルには、最後に使ったセッションの名前だけを書く
 LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice.lock")
-LOCK_WAIT_S = 240    # 順番を待つ上限。超えたら、読み上げずに戻る
+LOCK_WAIT_S = 420    # 順番を待つ上限。超えたら、読み上げずに戻る
+MIN_LISTEN_S = 120   # 長く待ったあとでも、聞き取りに使える最低限の秒数
 FLOOR_HOLD_S = 120   # 時間切れのあと、同じセッションが聞き取りを再開するまで順番を取っておく秒数
 TOTAL_LIMIT_S = 540  # 順番待ちと聞き取りを合わせた上限(コマンドの制限時間 600 秒に収める)
 
@@ -90,6 +92,85 @@ def end_pattern(word: str) -> re.Pattern:
     return re.compile(
         rf"(?:^|(?<=[{BOUNDARY}])|(?<=[{SENTENCE_TAIL}]))[{BOUNDARY}]*{re.escape(word)}(?:です|でーす|だ|だよ)?[{BOUNDARY}]*$"
     )
+
+
+# セッションの置き場所(優先 / 通常 / 後回し)と状態。字幕の窓(caption.swift)が表示し、
+# 利用者がタブをつまんで置き場所を変える。Mac を起動し直すと、最初からになる
+SESSIONS_PATH = os.path.expanduser("~/.voicemode/10-voice-sessions.json")
+LANES = ("priority", "normal", "later")
+_boot: list[str] = []
+_flags = {"paused": False}  # 字幕の窓の停止ボタンが押されているか(sessions_update が更新する)
+
+
+def boot_id() -> str:
+    """Mac を起動した時刻。起動し直したら、置き場所の記録を捨てるために使う。"""
+    if not _boot:
+        try:
+            out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r"sec = (\d+)", out)
+            _boot.append(m.group(1) if m else "")
+        except (OSError, subprocess.SubprocessError):
+            _boot.append("")
+    return _boot[0]
+
+
+def sessions_update(name: str, state: str | None = None) -> dict:
+    """自分のセッションを記録に加え(最初は通常)、状態を書く。全セッションの記録を返す。"""
+    try:
+        fd = os.open(SESSIONS_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                data = json.loads(f.read() or "{}")
+            except ValueError:
+                data = {}
+            if data.get("boot") != boot_id() or not isinstance(data.get("sessions"), dict):
+                data = {"boot": boot_id(), "sessions": {}}
+            me = data["sessions"].setdefault(name, {"lane": "normal", "state": "", "t": 0})
+            if me.get("lane") not in LANES:
+                me["lane"] = "normal"
+            changed = state is not None and me.get("state") != state
+            if state is not None:
+                me["state"] = state
+                me["t"] = int(time.time())
+            if changed or me["t"] == 0 or state is not None:
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(data, ensure_ascii=False))
+            _flags["paused"] = bool(data.get("paused"))
+            return data["sessions"]
+    except OSError:
+        return {name: {"lane": "normal"}}
+
+
+def session_end(name: str) -> None:
+    """会話を終えたセッションを記録から消す。字幕の窓のタブからも消える。"""
+    try:
+        with open(SESSIONS_PATH, "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            data = json.loads(f.read() or "{}")
+            if isinstance(data.get("sessions"), dict) and data["sessions"].pop(name, None) is not None:
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(data, ensure_ascii=False))
+    except (OSError, ValueError):
+        pass
+
+
+def may_speak(sessions: dict, name: str) -> bool:
+    """置き場所の決まりで、いま話しかけてよいか。
+
+    停止ボタンが押されている間は、どのセッションも話しかけない。
+    優先: いつでも。通常: 優先にほかのセッションがいないとき。後回し: 話しかけない。
+    """
+    if _flags["paused"]:
+        return False
+    lane = sessions.get(name, {}).get("lane", "normal")
+    if lane == "later":
+        return False
+    if lane == "normal":
+        return not any(v.get("lane") == "priority" for k, v in sessions.items() if k != name)
+    return True
 
 
 def read_floor(f) -> tuple[str, float, bool]:
@@ -124,13 +205,17 @@ def acquire_turn(name: str):
     start = time.time()
     f = open(LOCK_PATH, "a+", encoding="utf-8")
     os.chmod(LOCK_PATH, 0o600)
+    sessions_update(name, "waiting")
     while True:
         try:
+            if not may_speak(sessions_update(name), name):
+                raise BlockingIOError  # 置き場所の決まりで、まだ話せない
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             holder, last, active = read_floor(f)
             others_turn = bool(holder) and holder != name and active and time.time() - last < FLOOR_HOLD_S
             if not others_turn:
                 write_floor(f, name, True)
+                sessions_update(name, "talking")
                 return f, bool(holder) and holder != name, time.time() - start
             fcntl.flock(f, fcntl.LOCK_UN)
         except OSError:
@@ -312,12 +397,15 @@ def main() -> int:
     ap.add_argument("--idle", type=float, default=300, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 300)")
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
+    ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")
     ap.add_argument("--file", help="検証用。マイクの代わりに WAV ファイルを読む")
     ap.add_argument("--verbose", action="store_true", help="区切りごとの認識結果を標準エラーに出す")
     args = ap.parse_args()
 
-    if args.release:
+    if args.release or args.end:
         release_turn(args.name)
+        if args.end:
+            session_end(args.name)
         return 0
 
     pattern = end_pattern(args.end_word)
@@ -377,9 +465,9 @@ def main() -> int:
     if not from_file:
         lock, switched, waited = acquire_turn(args.name)
         if lock is None:
-            print(f"[順番待ち: ほかのセッションが音声で会話中のため、{LOCK_WAIT_S} 秒待っても始められませんでした。読み上げていません]")
+            print("[順番待ち: まだ話せません(ほかのセッションが会話中、または、このセッションより優先のセッションがある、後回しに置かれている)。読み上げていません]")
             return 0
-        args.max = min(args.max, TOTAL_LIMIT_S - waited)
+        args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
         if switched and say:
             say = f"{args.name}、からです。{say}"  # 別のセッションから切り替わったときは名乗る
     speaker = Speaker(say) if say and not from_file else None
@@ -417,7 +505,9 @@ def main() -> int:
                 jobs.join()  # 検証では、区切りごとに結果を待って判定の位置をそろえる
         segment, in_speech, voiced_frames, silent_run = [], False, 0, 0
 
+    total_ticks = 0
     for frame in frames:
+        total_ticks += 1
         elapsed += FRAME_S
         voiced = vad.is_speech(frame, RATE)
         recent.append(voiced)
@@ -462,6 +552,11 @@ def main() -> int:
 
         if stop.is_set():
             break
+        if not from_file and total_ticks % 33 == 0:  # 約 1 秒ごとに、停止ボタンを見る
+            sessions_update(args.name)
+            if _flags["paused"]:
+                state["reason"] = state["reason"] or "paused"
+                break
         if since_voice >= args.idle and not in_speech:
             jobs.join()
             state["reason"] = state["reason"] or "idle"
@@ -491,7 +586,8 @@ def main() -> int:
     if lock is not None:
         # 利用者が話し終えていない(時間切れ)なら、順番を持ち続ける。同じセッションが聞き取りを再開する。
         # 「以上」やミュートで終わったら手放し、ほかのセッションも話せるようにする
-        write_floor(lock, args.name, reason in ("idle", "max"))
+        write_floor(lock, args.name, reason in ("idle", "max", "paused"))
+        sessions_update(args.name, "muted" if reason == "mute" else "working")
     if not from_file:
         play(CUE_END)
         said = " ".join(texts)
@@ -514,6 +610,7 @@ def main() -> int:
         "idle": f"[打ち切り: {args.idle:g} 秒間、声が聞こえませんでした。「{args.end_word}」は聞こえていません]",
         "max": f"[打ち切り: 制限時間({args.max:g} 秒)に達しました。「{args.end_word}」は聞こえていません]",
         "mute": "[ミュート: 利用者が「ミュート」と言いました。マイクを閉じました]",
+        "paused": "[一時停止: 利用者が字幕の窓の停止ボタンを押しました。マイクを閉じました。再開ボタンが押されるまで、どのセッションも話しません]",
         "interrupted": "[中断されました]",
         "eof": f"[音声ファイルの終わりに達しました。「{args.end_word}」は聞こえていません]",
     }
