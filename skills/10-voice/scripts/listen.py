@@ -408,10 +408,38 @@ def key_down() -> bool:
         cg.CGEventSourceKeyState.argtypes = [ctypes.c_int32, ctypes.c_uint16]
         cg.CGEventSourceFlagsState.restype = ctypes.c_uint64
         cg.CGEventSourceFlagsState.argtypes = [ctypes.c_int32]
+        cg.CGEventSourceSecondsSinceLastEventType.restype = ctypes.c_double
+        cg.CGEventSourceSecondsSinceLastEventType.argtypes = [ctypes.c_int32, ctypes.c_uint32]
         _cg.append(cg)
     cg = _cg[0]
     # 0 は、すべての入力元を合わせた状態。キーの状態か、修飾キーのビットのどちらかで判定する
     return bool(cg.CGEventSourceKeyState(0, TALK_KEY)) or bool(cg.CGEventSourceFlagsState(0) & TALK_KEY_FLAG)
+
+
+KEY_SETTLE_S = 0.15   # キーが、この秒数、単独で押され続けたら「話すために押した」とみなす
+_hold = {"since": 0.0, "chord": False}
+
+
+def talk_held() -> bool:
+    """話すためのキーが、単独で押されているか。
+
+    キーを押している間に、ほかのキーが押されたら、ショートカット(⌘ と数字でアプリを切り替える、など)
+    なので、話すための操作として扱わない。押した直後の一瞬も、ショートカットの途中かもしれないので待つ。
+    """
+    if not key_down():
+        _hold["since"], _hold["chord"] = 0.0, False
+        return False
+    now = time.time()
+    if not _hold["since"]:
+        _hold["since"] = now
+    if not _hold["chord"]:
+        # 10 は、文字や数字などのキーが押された、という種類の出来事。修飾キーだけの操作は含まれない
+        since_other_key = _cg[0].CGEventSourceSecondsSinceLastEventType(0, 10)
+        if since_other_key < now - _hold["since"] + 0.03:
+            _hold["chord"] = True
+    if _hold["chord"]:
+        return False
+    return now - _hold["since"] >= KEY_SETTLE_S
 
 
 def input_device():
@@ -802,6 +830,7 @@ class Speaker:
         self.speed = speech_speed()
         self.seek_seen = self._seek_stamp()
         self.first_heard: str | None = None  # 最初の再生で伝わった範囲(読み直しでは変えない)
+        self.pending: int | None = None      # 止められた所から読み上げを続ける、という指示(バイト位置)
         threading.Thread(target=self._synth, daemon=True).start()
 
     def _request(self, text: str, speed: float) -> bytes:
@@ -837,6 +866,15 @@ class Speaker:
 
     def start(self) -> None:
         threading.Thread(target=self._play, daemon=True).start()
+
+    def cut_short(self) -> bool:
+        """読み上げが、途中で止められたままか。"""
+        return bool(self.pcm) and self.done.is_set() and self.written < len(self.pcm)
+
+    def resume(self) -> None:
+        """止められた所の少し手前から、読み上げを続ける(キーに触れただけで、何も話されなかったとき)。"""
+        self.first_heard = None
+        self.pending = max(0, self.written - int(1.0 * KOKORO_RATE) * 2) // 2 * 2
 
     def close(self) -> None:
         """聞き取りの終わりに呼ぶ。再生を止め、つまみを使えない表示にする。"""
@@ -909,7 +947,7 @@ class Speaker:
             if self.closed.is_set() or (first and self.cancel.is_set()):
                 out.abort()
                 return
-            if not first and self.stop_on_key and key_down():
+            if not first and self.stop_on_key and talk_held():
                 out.abort()  # 読み直しの途中で、利用者が話し始めた
                 return
             out.write(self.pcm[i : i + step])
@@ -978,13 +1016,14 @@ class Speaker:
                     beat = time.time()
                     self._report(False)  # つまみが使えることを、字幕の窓に知らせ続ける
                 frac = self._seek_request()
-                if frac is None or not self.pcm:
+                start, self.pending = self.pending, None
+                if (frac is None and start is None) or not self.pcm:
                     continue
                 self.cancel.clear()
                 speak_lock, out = self._open(sd)
                 if out is None:
                     continue
-                self.written = self._seek_start(frac)
+                self.written = start if frac is None else self._seek_start(frac)
                 with speak_lock, out:
                     self._run(out, self.written, False)
                 self._report(False)
@@ -1037,7 +1076,7 @@ def key_frames(stop: threading.Event, on_ready):
     import sounddevice as sd
 
     while not stop.is_set():
-        if not key_down():
+        if not talk_held():
             time.sleep(FRAME_S)
             yield None
             continue
@@ -1068,9 +1107,9 @@ def key_frames(stop: threading.Event, on_ready):
                     on_ready()
                 while len(buf) >= FRAME_BYTES:
                     frame, buf = buf[:FRAME_BYTES], buf[FRAME_BYTES:]
-                    released = 0.0 if key_down() else released + FRAME_S
+                    released = 0.0 if talk_held() else released + FRAME_S
                     yield frame if ready else None
-                if not ready and not key_down():
+                if not ready and not talk_held():
                     break  # 合図の前に離した(ショートカットなど)。何もしない
         finally:
             # 聞き取りを途中でやめたときも、ここでマイクを閉じる
@@ -1203,7 +1242,7 @@ def memo_watch() -> int:
     def held_for(seconds: float) -> bool:
         start = time.time()
         while time.time() - start < seconds:
-            if not key_down():
+            if not talk_held():
                 return False
             time.sleep(0.03)
         return True
@@ -1216,7 +1255,7 @@ def memo_watch() -> int:
         time.sleep(0.05)
         lock = None
         try:
-            if not key_down() or not held_for(MEMO_MIN_HOLD_S):
+            if not talk_held() or not held_for(MEMO_MIN_HOLD_S):
                 continue
             lock = open(LOCK_PATH, "a+", encoding="utf-8")
             try:
@@ -1241,7 +1280,7 @@ def memo_watch() -> int:
             for frame in mic_frames(stop, on_ready):
                 if ready.is_set():
                     frames.append(frame)
-                released = 0.0 if key_down() else released + FRAME_S
+                released = 0.0 if talk_held() else released + FRAME_S
                 if released >= RELEASE_GRACE_S or len(frames) * FRAME_S >= 120:
                     stop.set()
             if not ready.is_set():
@@ -1495,6 +1534,7 @@ def main() -> int:
     release_run = 0   # キーを離してからのフレーム数
     hold_frames = 0   # キーを押し続けているフレーム数
     memo_seen = 0     # 合図を鳴らし終えたメモの数
+    up_ticks = 0      # キーが離されてからの回数(約 30 ミリ秒ごと)
     down = False
 
     def cut() -> None:
@@ -1513,7 +1553,7 @@ def main() -> int:
         total_ticks += 1
         elapsed += FRAME_S
         if key_mode:
-            down = key_down()
+            down = talk_held()
             if frame is not None:
                 # マイクが開き、合図が鳴ったあとの音声。ここから録る(声の判定を待つと、話し始めが欠ける)
                 if not talking:
@@ -1575,6 +1615,15 @@ def main() -> int:
             elif not barged and (down if key_mode else in_speech and voiced_frames * FRAME_S >= BARGE_VOICED_S):
                 barged = True
                 speaker.cancel.set()
+
+        up_ticks = 0 if down else up_ticks + 1
+        if (key_mode and barged and speaker and not talking and not in_speech
+                and up_ticks * FRAME_S >= RELEASE_GRACE_S + 0.3   # マイクが閉じるのを待つ。閉じてから、接続が戻るまでは、読み上げの側が待つ
+                and not texts and state["memo_count"] == memo_seen and speaker.cut_short()):
+            # キーで読み上げを止めたが、何も話されなかった(触れただけ、ショートカットの途中だった、聞き取れなかった)。
+            # 黙って待ち続けないように、止めた所から読み上げを続ける
+            barged = False
+            speaker.resume()
 
         if frame is None:
             pass
