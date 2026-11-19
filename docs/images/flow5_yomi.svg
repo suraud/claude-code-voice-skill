@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" font-family="-apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif"><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect x="0" y="0" width="1000" height="560" fill="#ffffff"/>
+<text x="24" y="34" font-size="17" fill="#1e2a3c" font-weight="700" text-anchor="start">英語の言葉や数字を、正しく読み上げて、正しく聞き取る仕組み</text>
+<rect x="24" y="54" width="952" height="230" rx="12" fill="#f7f9fc" stroke="#d5dce6" stroke-width="1"/>
+<text x="500.0" y="76" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="middle">Claude が話すとき:字幕には英語や数字のまま出し、声では日本語の読みで読む</text>
+<rect x="44" y="104" width="210" height="130" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="149.0" y="148.5" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">Claude が書いた文</text>
+<text x="149.0" y="167.5" font-size="12.5" fill="#55627a" text-anchor="middle">GitHub へ 2 件 push し、</text>
+<text x="149.0" y="184.5" font-size="12.5" fill="#55627a" text-anchor="middle">{v1.2|ばーじょんいってんに}</text>
+<text x="149.0" y="201.5" font-size="12.5" fill="#55627a" text-anchor="middle">に上げました</text>
+<rect x="310" y="92" width="250" height="154" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="435.0" y="148.5" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">会話のプログラムが変換</text>
+<text x="435.0" y="167.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">読みがなの表の語 → 読み</text>
+<text x="435.0" y="184.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">{表記|読み} → 指定の読み</text>
+<text x="435.0" y="201.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">数字 → 漢数字、小数は「てん」</text>
+<rect x="620" y="92" width="330" height="68" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
+<text x="785.0" y="122.5" font-size="14" fill="#7a5200" font-weight="700" text-anchor="middle">字幕(表記のまま)</text>
+<text x="785.0" y="141.5" font-size="12.5" fill="#5c4a1e" text-anchor="middle">GitHub へ 2 件 push し、v1.2 に上げました</text>
+<rect x="620" y="178" width="330" height="68" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="785.0" y="208.5" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">声(読み)→ Kokoro</text>
+<text x="785.0" y="227.5" font-size="12.5" fill="#55627a" text-anchor="middle">ギットハブ へ 二件 プッシュ し、…</text>
+<path d="M254,169 L308,169" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M560,140 L618,126" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M560,198 L618,212" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="24" y="304" width="952" height="236" rx="12" fill="#f7f9fc" stroke="#d5dce6" stroke-width="1"/>
+<text x="500.0" y="326" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="middle">あなたが話すとき:聞き取った言葉を、正しいつづりに直してから、Claude に渡す</text>
+<rect x="44" y="360" width="150" height="120" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
+<text x="119.0" y="408.0" font-size="14" fill="#7a5200" font-weight="700" text-anchor="middle">あなたの声</text>
+<text x="119.0" y="427.0" font-size="12.5" fill="#5c4a1e" text-anchor="middle">「ワイファイの</text>
+<text x="119.0" y="444.0" font-size="12.5" fill="#5c4a1e" text-anchor="middle">設定を見て」</text>
+<rect x="236" y="348" width="230" height="144" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="351.0" y="391.0" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">Whisper</text>
+<text x="351.0" y="410.0" font-size="12.5" fill="#55627a" text-anchor="middle">声を文字にする</text>
+<text x="351.0" y="427.0" font-size="12.5" fill="#55627a" text-anchor="middle"></text>
+<text x="351.0" y="444.0" font-size="12.5" fill="#55627a" text-anchor="middle">よく使う語を、</text>
+<text x="351.0" y="461.0" font-size="12.5" fill="#55627a" text-anchor="middle">あらかじめ教えておく</text>
+<rect x="508" y="348" width="250" height="144" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="633.0" y="391.0" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">会話のプログラムが直す</text>
+<text x="633.0" y="410.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">読みで出た語 → 表記</text>
+<text x="633.0" y="427.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">大文字・小文字・ハイフンをそろえる</text>
+<text x="633.0" y="444.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">登録した聞き間違い → 表記</text>
+<text x="633.0" y="461.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">決まった聞き間違いは捨てる</text>
+<rect x="800" y="360" width="156" height="120" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="878.0" y="408.0" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">Claude が受け取る</text>
+<text x="878.0" y="427.0" font-size="12.5" fill="#55627a" text-anchor="middle">「Wi-Fi の</text>
+<text x="878.0" y="444.0" font-size="12.5" fill="#55627a" text-anchor="middle">設定を見て」</text>
+<path d="M194,420 L234,420" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M466,420 L506,420" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M758,420 L798,420" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="500" y="524" font-size="12" fill="#55627a" text-anchor="middle">読みがなの表は 2 つ。共通の表(スキルに入っている、一般の語)と、自分用の表(Mac の中だけ。固有の語はこちら)。</text>
+</svg>

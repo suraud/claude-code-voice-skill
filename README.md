@@ -73,6 +73,10 @@ ln -s <このリポジトリの場所>/skills/10-voice ~/.claude/skills/10-voice
 
 ## 仕組み
 
+![全体の構成](docs/images/overview.svg)
+
+声は Mac の外に出ない。Anthropic に届くのは、キーボードで入力したときと同じ、文字だけ。会話の流れ、複数のセッションの順番、メモ、読みがなの仕組みと、プログラムの中身は、[仕組み](docs/仕組み.md) に図でまとめてある。
+
 | 役割 | 使っているもの |
 |---|---|
 | 音声認識 | Whisper(whisper.cpp、モデルは large-v3-turbo)。`127.0.0.1:2022` で動く |

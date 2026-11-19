@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 884" width="1000" height="884" font-family="-apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif"><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect x="0" y="0" width="1000" height="884" fill="#ffffff"/>
+<text x="24" y="34" font-size="17" fill="#1e2a3c" font-weight="700" text-anchor="start">会話のプログラム(listen.py)の中身:7 つの部品と、使っているライブラリ</text>
+<text x="350" y="70" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="middle">listen.py の部品</text>
+<text x="655" y="70" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="middle">使っているライブラリ</text>
+<text x="894" y="70" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="middle">その先の相手</text>
+<rect x="190" y="82" width="320" height="566" rx="14" fill="#f4f7fb" stroke="#1f6fd0" stroke-width="1.5"/>
+<rect x="204" y="96" width="292" height="66" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="350.0" y="117.0" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">表記と読みに分ける</text>
+<text x="350.0" y="136.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">読みがなの表で、読みに直す</text>
+<text x="350.0" y="153.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">数字を、漢数字に直す</text>
+<rect x="526" y="102" width="258" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="655.0" y="133.5" font-size="12.5" fill="#55627a" text-anchor="middle">re(Python の標準)</text>
+<rect x="812" y="102" width="164" height="54" rx="10" fill="#f0f0f0" stroke="#9a9a9a" stroke-width="1.5"/>
+<text x="894.0" y="125.0" font-size="12.5" fill="#555555" text-anchor="middle">読みがなの表</text>
+<text x="894.0" y="142.0" font-size="12.5" fill="#555555" text-anchor="middle">(共通、自分用)</text>
+<path d="M496,129 L524,129" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M784,129 L810,129" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="204" y="174" width="292" height="66" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="350.0" y="195.0" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">読み上げる</text>
+<text x="350.0" y="214.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">声を作らせて、再生する</text>
+<text x="350.0" y="231.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">位置のつまみ、速さに応じる</text>
+<rect x="526" y="180" width="258" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="655.0" y="203.0" font-size="12.5" fill="#55627a" text-anchor="middle">httpx(追加で入れたもの)</text>
+<text x="655.0" y="220.0" font-size="12.5" fill="#55627a" text-anchor="middle">sounddevice(追加)→ PortAudio</text>
+<rect x="812" y="180" width="164" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="894.0" y="203.0" font-size="12.5" fill="#55627a" text-anchor="middle">Kokoro(Mac の中)</text>
+<text x="894.0" y="220.0" font-size="12.5" fill="#55627a" text-anchor="middle">イヤホン</text>
+<path d="M496,207 L524,207" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M784,207 L810,207" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="204" y="252" width="292" height="66" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="350.0" y="273.0" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">キーを見張る</text>
+<text x="350.0" y="292.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">右 ⌘ が、単独で押されたか</text>
+<text x="350.0" y="309.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">(ショートカットを見分ける)</text>
+<rect x="526" y="258" width="258" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="655.0" y="281.0" font-size="12.5" fill="#55627a" text-anchor="middle">ctypes(Python の標準)</text>
+<text x="655.0" y="298.0" font-size="12.5" fill="#55627a" text-anchor="middle">→ Core Graphics(macOS の機能)</text>
+<rect x="812" y="258" width="164" height="54" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
+<text x="894.0" y="289.5" font-size="12.5" fill="#5c4a1e" text-anchor="middle">キーボード</text>
+<path d="M496,285 L524,285" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M784,285 L810,285" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="204" y="330" width="292" height="66" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="350.0" y="351.0" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">声を取り込む</text>
+<text x="350.0" y="370.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">マイクを開いて、音を受け取る</text>
+<text x="350.0" y="387.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">息つぎで、区切る</text>
+<rect x="526" y="336" width="258" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="655.0" y="359.0" font-size="12.5" fill="#55627a" text-anchor="middle">sounddevice(追加)→ PortAudio</text>
+<text x="655.0" y="376.0" font-size="12.5" fill="#55627a" text-anchor="middle">webrtcvad(追加。声の有無の判定)</text>
+<rect x="812" y="336" width="164" height="54" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
+<text x="894.0" y="367.5" font-size="12.5" fill="#5c4a1e" text-anchor="middle">マイク</text>
+<path d="M496,363 L524,363" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M784,363 L810,363" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="204" y="408" width="292" height="66" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="350.0" y="429.0" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">文字にする</text>
+<text x="350.0" y="448.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">区切りごとに、文字にさせる</text>
+<text x="350.0" y="465.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">表記をそろえる</text>
+<rect x="526" y="414" width="258" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="655.0" y="437.0" font-size="12.5" fill="#55627a" text-anchor="middle">httpx(追加で入れたもの)</text>
+<text x="655.0" y="454.0" font-size="12.5" fill="#55627a" text-anchor="middle">wave(Python の標準)</text>
+<rect x="812" y="414" width="164" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="894.0" y="445.5" font-size="12.5" fill="#55627a" text-anchor="middle">Whisper(Mac の中)</text>
+<path d="M496,441 L524,441" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M784,441 L810,441" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="204" y="486" width="292" height="66" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="350.0" y="507.0" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">どれが話すかを決める</text>
+<text x="350.0" y="526.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">話してよいかを確かめる</text>
+<text x="350.0" y="543.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">状態を書く</text>
+<rect x="526" y="492" width="258" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="655.0" y="523.5" font-size="12.5" fill="#55627a" text-anchor="middle">fcntl、json(Python の標準)</text>
+<rect x="812" y="492" width="164" height="54" rx="10" fill="#f0f0f0" stroke="#9a9a9a" stroke-width="1.5"/>
+<text x="894.0" y="515.0" font-size="12.5" fill="#555555" text-anchor="middle">順番のファイル</text>
+<text x="894.0" y="532.0" font-size="12.5" fill="#555555" text-anchor="middle">セッションの記録</text>
+<path d="M496,519 L524,519" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M784,519 L810,519" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="204" y="564" width="292" height="66" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="350.0" y="585.0" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">字幕とメモを書く</text>
+<text x="350.0" y="604.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">読んだ文、聞いた文を残す</text>
+<text x="350.0" y="621.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">メモを預かる</text>
+<rect x="526" y="570" width="258" height="54" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="655.0" y="601.5" font-size="12.5" fill="#55627a" text-anchor="middle">Python の標準だけ</text>
+<rect x="812" y="570" width="164" height="54" rx="10" fill="#f0f0f0" stroke="#9a9a9a" stroke-width="1.5"/>
+<text x="894.0" y="593.0" font-size="12.5" fill="#555555" text-anchor="middle">字幕のファイル</text>
+<text x="894.0" y="610.0" font-size="12.5" fill="#555555" text-anchor="middle">預かったメモ</text>
+<path d="M496,597 L524,597" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M784,597 L810,597" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="24" y="110" width="140" height="70" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="94.0" y="141.5" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">Claude Code</text>
+<text x="94.0" y="160.5" font-size="12.5" fill="#55627a" text-anchor="middle">コマンドを実行</text>
+<rect x="24" y="240" width="140" height="96" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="94.0" y="267.5" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">voice.sh</text>
+<text x="94.0" y="286.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">入口のスクリプト</text>
+<text x="94.0" y="303.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">点検して、</text>
+<text x="94.0" y="320.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">listen.py を呼ぶ</text>
+<rect x="24" y="400" width="140" height="86" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="94.0" y="431.0" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">Claude Code の hook</text>
+<text x="94.0" y="450.0" font-size="12.5" fill="#55627a" text-anchor="middle">確認が出たとき</text>
+<text x="94.0" y="467.0" font-size="12.5" fill="#55627a" text-anchor="middle">返事を終えるとき</text>
+<path d="M94,180 L94,238" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M94,400 L94,338" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M164,288 L188,288" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="24" y="688" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="start">ほかのプログラム</text>
+<rect x="24" y="702" width="300" height="96" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="174.0" y="729.5" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">字幕の窓(caption.swift)</text>
+<text x="174.0" y="748.5" font-size="12.5" fill="#55627a" text-anchor="middle">AppKit(macOS の標準)で作った窓</text>
+<text x="174.0" y="765.5" font-size="12.5" fill="#55627a" text-anchor="middle">共有のファイルを、読んで、書く</text>
+<text x="174.0" y="782.5" font-size="12.5" fill="#55627a" text-anchor="middle">listen.py とは、ファイルだけでつながる</text>
+<rect x="350" y="702" width="300" height="96" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="500.0" y="729.5" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">メモの見張り</text>
+<text x="500.0" y="748.5" font-size="12.5" fill="#55627a" text-anchor="middle">listen.py を、別の形で動かしたもの</text>
+<text x="500.0" y="765.5" font-size="12.5" fill="#55627a" text-anchor="middle">「キーを見張る」「声を取り込む」</text>
+<text x="500.0" y="782.5" font-size="12.5" fill="#55627a" text-anchor="middle">「文字にする」を、そのまま使う</text>
+<rect x="676" y="702" width="300" height="96" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="826.0" y="729.5" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">話し方の分析(review.py)</text>
+<text x="826.0" y="748.5" font-size="12.5" fill="#55627a" text-anchor="middle">Python の標準だけ</text>
+<text x="826.0" y="765.5" font-size="12.5" fill="#55627a" text-anchor="middle">字幕のファイルを読んで、数える</text>
+<text x="826.0" y="782.5" font-size="12.5" fill="#55627a" text-anchor="middle">分析は、Claude が行う</text>
+<text x="500" y="836" font-size="11.5" fill="#55627a" text-anchor="middle">ライブラリは 3 種類。Python の標準(最初から入っている)、追加で入れたもの、macOS の機能。ctypes は、Python から macOS の機能を呼ぶ、標準の部品。</text>
+<text x="500" y="858" font-size="11.5" fill="#55627a" text-anchor="middle">Whisper は whisper.cpp、Kokoro は Kokoro-FastAPI という、Mac の中で動く別のプログラム。通信は、Mac の中(127.0.0.1)だけ。</text>
+</svg>

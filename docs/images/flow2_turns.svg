@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 770" width="1000" height="770" font-family="-apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif"><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect x="0" y="0" width="1000" height="770" fill="#ffffff"/>
+<text x="24" y="34" font-size="17" fill="#1e2a3c" font-weight="700" text-anchor="start">Claude Code を複数開いているとき、どれが話すかを決める仕組み</text>
+<text x="60" y="70" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="start">話す前:いま話してよいかを、上から順に確かめる(セッション = 開いている Claude Code の 1 つ)</text>
+<rect x="60" y="86" width="300" height="46" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="210.0" y="113.5" font-size="12.5" fill="#55627a" text-anchor="middle">あるセッションが、話したくなった</text>
+<rect x="60" y="162" width="300" height="52" rx="10" fill="#f6f1ff" stroke="#9a84d6" stroke-width="1.5"/>
+<text x="210.0" y="192.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">あなたが、全体の「停止」ボタンを押している?</text>
+<path d="M210,132 L210,160" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M360,188 L438,188" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="399.0" y="180" font-size="11.5" fill="#5b6470" text-anchor="middle">はい</text>
+<text x="222" y="234" font-size="11.5" fill="#5b6470" text-anchor="start">いいえ</text>
+<rect x="60" y="244" width="300" height="52" rx="10" fill="#f6f1ff" stroke="#9a84d6" stroke-width="1.5"/>
+<text x="210.0" y="274.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">あなたが、別のセッションを「話す相手」に選んでいる?</text>
+<path d="M210,214 L210,242" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M360,270 L438,270" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="399.0" y="262" font-size="11.5" fill="#5b6470" text-anchor="middle">はい</text>
+<text x="222" y="316" font-size="11.5" fill="#5b6470" text-anchor="start">いいえ</text>
+<rect x="60" y="326" width="300" height="52" rx="10" fill="#f6f1ff" stroke="#9a84d6" stroke-width="1.5"/>
+<text x="210.0" y="356.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">あなたが、このセッションを「あとで」に回している?</text>
+<path d="M210,296 L210,324" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M360,352 L438,352" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="399.0" y="344" font-size="11.5" fill="#5b6470" text-anchor="middle">はい</text>
+<text x="222" y="398" font-size="11.5" fill="#5b6470" text-anchor="start">いいえ</text>
+<rect x="60" y="408" width="300" height="52" rx="10" fill="#f6f1ff" stroke="#9a84d6" stroke-width="1.5"/>
+<text x="210.0" y="438.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">ほかのセッションが、話している最中?</text>
+<path d="M210,378 L210,406" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M360,434 L438,434" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="399.0" y="426" font-size="11.5" fill="#5b6470" text-anchor="middle">はい</text>
+<text x="222" y="480" font-size="11.5" fill="#5b6470" text-anchor="start">いいえ</text>
+<rect x="440" y="162" width="230" height="298" rx="10" fill="#fdeeee" stroke="#d98a8a" stroke-width="1.5"/>
+<text x="555.0" y="256.5" font-size="14" fill="#8a2f2f" font-weight="700" text-anchor="middle">待つ</text>
+<text x="555.0" y="275.5" font-size="12.5" fill="#8a4a4a" text-anchor="middle">声は出さない</text>
+<text x="555.0" y="292.5" font-size="12.5" fill="#8a4a4a" text-anchor="middle"></text>
+<text x="555.0" y="309.5" font-size="12.5" fill="#8a4a4a" text-anchor="middle">理由がなくなると、</text>
+<text x="555.0" y="326.5" font-size="12.5" fill="#8a4a4a" text-anchor="middle">自動で、確かめ直す</text>
+<text x="555.0" y="343.5" font-size="12.5" fill="#8a4a4a" text-anchor="middle"></text>
+<text x="555.0" y="360.5" font-size="12.5" fill="#8a4a4a" text-anchor="middle">(Claude は、聞き取りを</text>
+<text x="555.0" y="377.5" font-size="12.5" fill="#8a4a4a" text-anchor="middle">裏で動かして待っている)</text>
+<path d="M210,460 L210,488" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="60" y="490" width="300" height="60" rx="10" fill="#e9f7ec" stroke="#5fae74" stroke-width="1.5"/>
+<text x="210.0" y="516.5" font-size="14" fill="#1f5f33" font-weight="700" text-anchor="middle">話して、あなたの返事を聞く</text>
+<text x="210.0" y="535.5" font-size="12.5" fill="#3a6b49" text-anchor="middle">このセッションが「順番」を持つ</text>
+<rect x="710" y="162" width="262" height="298" rx="10" fill="#f0f0f0" stroke="#9a9a9a" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="841.0" y="239.5" font-size="14" fill="#333333" font-weight="700" text-anchor="middle">あなたの操作(字幕の窓)</text>
+<text x="841.0" y="258.5" font-size="12.5" fill="#555555" text-anchor="middle">タブを押す:そのセッションを</text>
+<text x="841.0" y="275.5" font-size="12.5" fill="#555555" text-anchor="middle">「話す相手」に選ぶ</text>
+<text x="841.0" y="292.5" font-size="12.5" fill="#555555" text-anchor="middle"></text>
+<text x="841.0" y="309.5" font-size="12.5" fill="#555555" text-anchor="middle">タブを「あとで」へ移す:</text>
+<text x="841.0" y="326.5" font-size="12.5" fill="#555555" text-anchor="middle">戻すまで、話しかけてこない</text>
+<text x="841.0" y="343.5" font-size="12.5" fill="#555555" text-anchor="middle"></text>
+<text x="841.0" y="360.5" font-size="12.5" fill="#555555" text-anchor="middle">「停止」ボタン:</text>
+<text x="841.0" y="377.5" font-size="12.5" fill="#555555" text-anchor="middle">すべてのセッションを止める</text>
+<text x="841.0" y="394.5" font-size="12.5" fill="#555555" text-anchor="middle">(会議のときなど)</text>
+<text x="228" y="590" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="start">話したあと:起きたことによって、次の動きが決まる</text>
+<path d="M210,550 L210,614 L185,614 L185,658" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M210,614 L500,614 L500,658" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M500,614 L815,614 L815,658" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="193" y="646" font-size="12" fill="#1f5f33" font-weight="700" text-anchor="start">あなたが返事をした</text>
+<text x="508" y="646" font-size="12" fill="#1f5f33" font-weight="700" text-anchor="start">5 分、返事がない</text>
+<text x="823" y="646" font-size="12" fill="#1f5f33" font-weight="700" text-anchor="start">別の相手を選んだ</text>
+<rect x="40" y="660" width="290" height="88" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="185.0" y="692.0" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">順番を手放す</text>
+<text x="185.0" y="711.0" font-size="12.5" fill="#55627a" text-anchor="middle">Claude は、返事を考えて作業する</text>
+<text x="185.0" y="728.0" font-size="12.5" fill="#55627a" text-anchor="middle">その間、ほかのセッションが話せる</text>
+<rect x="355" y="660" width="290" height="88" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="500.0" y="692.0" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">順番を持ったまま、待つ</text>
+<text x="500.0" y="711.0" font-size="12.5" fill="#55627a" text-anchor="middle">まだ考えている、という扱い</text>
+<text x="500.0" y="728.0" font-size="12.5" fill="#55627a" text-anchor="middle">短く声をかけて、聞き直す</text>
+<rect x="670" y="660" width="290" height="88" rx="10" fill="#fdeeee" stroke="#d98a8a" stroke-width="1.5"/>
+<text x="815.0" y="692.0" font-size="14" fill="#8a2f2f" font-weight="700" text-anchor="middle">すぐに止まって、「待つ」に戻る</text>
+<text x="815.0" y="711.0" font-size="12.5" fill="#8a4a4a" text-anchor="middle">読み上げも、聞き取りもやめる</text>
+<text x="815.0" y="728.0" font-size="12.5" fill="#8a4a4a" text-anchor="middle">選び直されたら、続きから話す</text>
+</svg>

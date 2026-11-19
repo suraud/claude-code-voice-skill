@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" width="1000" height="640" font-family="-apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif"><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect x="0" y="0" width="1000" height="640" fill="#ffffff"/>
+<text x="24" y="34" font-size="17" fill="#1e2a3c" font-weight="700" text-anchor="start">思いついたことを、声でメモする仕組み</text>
+<rect x="24" y="54" width="466" height="356" rx="12" fill="#f7f9fc" stroke="#d5dce6" stroke-width="1"/>
+<text x="257.0" y="76" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="middle">Claude が、あなたの返事を待っているとき</text>
+<rect x="510" y="54" width="466" height="356" rx="12" fill="#f7f9fc" stroke="#d5dce6" stroke-width="1"/>
+<text x="743.0" y="76" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="middle">Claude が、作業をしているとき</text>
+<rect x="57" y="92" width="400" height="60" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
+<text x="257.0" y="118.0" font-size="12.5" fill="#5c4a1e" text-anchor="middle">右 ⌘ を押し、合図のあとに</text>
+<text x="257.0" y="135.0" font-size="12.5" fill="#5c4a1e" text-anchor="middle">「メモ、(内容)」と言って離す</text>
+<rect x="57" y="172" width="400" height="60" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="257.0" y="198.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">会話のプログラムが、</text>
+<text x="257.0" y="215.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">返事と分けて預かる</text>
+<path d="M257,152 L257,170" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="57" y="252" width="400" height="60" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="257.0" y="278.0" font-size="12.5" fill="#55627a" text-anchor="middle">「ポン」と鳴る</text>
+<text x="257.0" y="295.0" font-size="12.5" fill="#55627a" text-anchor="middle">聞き取りは、そのまま続く</text>
+<path d="M257,232 L257,250" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="543" y="92" width="400" height="60" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
+<text x="743.0" y="126.5" font-size="12.5" fill="#5c4a1e" text-anchor="middle">右 ⌘ を押し続ける</text>
+<rect x="543" y="172" width="400" height="60" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="743.0" y="198.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">メモの見張りが、マイクを開く</text>
+<text x="743.0" y="215.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">2 秒ほどで、合図の音</text>
+<path d="M743,152 L743,170" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="543" y="252" width="400" height="60" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
+<text x="743.0" y="278.0" font-size="12.5" fill="#5c4a1e" text-anchor="middle">内容を話して、離す</text>
+<text x="743.0" y="295.0" font-size="12.5" fill="#5c4a1e" text-anchor="middle">(「メモ」と言わなくてよい)</text>
+<path d="M743,232 L743,250" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="543" y="332" width="400" height="60" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="743.0" y="358.0" font-size="12.5" fill="#55627a" text-anchor="middle">文字にして預かる</text>
+<text x="743.0" y="375.0" font-size="12.5" fill="#55627a" text-anchor="middle">「ポン」と鳴る</text>
+<path d="M743,312 L743,330" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="24" y="436" width="952" height="56" rx="10" fill="#f0f0f0" stroke="#9a9a9a" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="500.0" y="469.0" font-size="14" fill="#333333" font-weight="700" text-anchor="middle">預かり場所(共有のファイル。セッションごと)</text>
+<path d="M257,312 L257,434" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M743,392 L743,434" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="24" y="530" width="952" height="90" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="500.0" y="571.0" font-size="12.5" fill="#55627a" text-anchor="middle">Claude が、次にあなたの発言を受け取るときに、メモも一緒に受け取る</text>
+<text x="500.0" y="588.0" font-size="12.5" fill="#55627a" text-anchor="middle">あとでやることなら TODO.md に書き足し、質問なら答える</text>
+<path d="M500,492 L500,528" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+</svg>

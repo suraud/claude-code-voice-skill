@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" width="1000" height="300" font-family="-apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif"><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect x="0" y="0" width="1000" height="300" fill="#ffffff"/>
+<text x="24" y="34" font-size="17" fill="#1e2a3c" font-weight="700" text-anchor="start">Claude Code が、実行の確認を出して止まったときに、声で知らせる仕組み</text>
+<rect x="24" y="86" width="176" height="96" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
+<text x="112.0" y="121.5" font-size="12.5" fill="#55627a" text-anchor="middle">Claude Code が、</text>
+<text x="112.0" y="138.5" font-size="12.5" fill="#55627a" text-anchor="middle">実行の確認を画面に出して、</text>
+<text x="112.0" y="155.5" font-size="12.5" fill="#55627a" text-anchor="middle">止まる</text>
+<rect x="218" y="86" width="176" height="96" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
+<text x="306.0" y="130.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">Claude Code の hook が、</text>
+<text x="306.0" y="147.0" font-size="12.5" fill="#2c4f86" text-anchor="middle">会話のプログラムを呼ぶ</text>
+<path d="M200,134 L216,134" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="412" y="86" width="176" height="96" rx="10" fill="#f6f1ff" stroke="#9a84d6" stroke-width="1.5"/>
+<text x="500.0" y="121.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">そのセッションは、</text>
+<text x="500.0" y="138.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">音声で会話中?</text>
+<text x="500.0" y="155.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">(止められていない)</text>
+<path d="M394,134 L410,134" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="606" y="86" width="176" height="96" rx="10" fill="#f6f1ff" stroke="#9a84d6" stroke-width="1.5"/>
+<text x="694.0" y="121.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">ほかのセッションの</text>
+<text x="694.0" y="138.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">読み上げと、あなたの返事が</text>
+<text x="694.0" y="155.5" font-size="12.5" fill="#5d4f8f" text-anchor="middle">終わるのを待つ</text>
+<path d="M588,134 L604,134" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="800" y="86" width="176" height="96" rx="10" fill="#e9f7ec" stroke="#5fae74" stroke-width="1.5"/>
+<text x="888.0" y="121.5" font-size="12.5" fill="#3a6b49" text-anchor="middle">「(名前)、確認待ちです。</text>
+<text x="888.0" y="138.5" font-size="12.5" fill="#3a6b49" text-anchor="middle">画面を見てください」</text>
+<text x="888.0" y="155.5" font-size="12.5" fill="#3a6b49" text-anchor="middle">と話す</text>
+<path d="M782,134 L798,134" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="500" y="224" font-size="12" fill="#55627a" text-anchor="middle">会話していないセッション、文字だけで使っているセッションでは、何もしない(画面の通知だけ)。</text>
+<text x="500" y="246" font-size="12" fill="#55627a" text-anchor="middle">待っている間に確認が済んだら、知らせない。</text>
+</svg>
