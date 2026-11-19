@@ -10,9 +10,9 @@
 
   <rect x="0" y="0" width="1000" height="620" fill="#ffffff"/>
 
-  <!-- この Mac の中 -->
+  <!-- この Mac 上 -->
   <rect x="210" y="24" width="566" height="572" rx="16" fill="#f4f7fb" stroke="#b9c4d2" stroke-width="1.5"/>
-  <text x="230" y="52" font-size="15" font-weight="700" fill="#33415a">この Mac の中(声は、ここから外に出ない)</text>
+  <text x="230" y="52" font-size="15" font-weight="700" fill="#33415a">Mac 上で動作(音声は外部に送信されない)</text>
 
   <!-- 利用者 -->
   <rect x="24" y="150" width="150" height="250" rx="14" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
@@ -20,7 +20,7 @@
   <text x="99" y="222" font-size="13" fill="#5c4a1e" text-anchor="middle">右 ⌘ を押して話す</text>
   <text x="99" y="262" font-size="13" fill="#5c4a1e" text-anchor="middle">イヤホンで聞く</text>
   <text x="99" y="302" font-size="13" fill="#5c4a1e" text-anchor="middle">字幕を読む</text>
-  <text x="99" y="342" font-size="13" fill="#5c4a1e" text-anchor="middle">窓のボタンで</text>
+  <text x="99" y="342" font-size="13" fill="#5c4a1e" text-anchor="middle">ウィンドウのボタンで</text>
   <text x="99" y="360" font-size="13" fill="#5c4a1e" text-anchor="middle">相手・方式を選ぶ</text>
 
   <!-- Claude Code -->
@@ -39,31 +39,31 @@
   <!-- Whisper / Kokoro -->
   <rect x="540" y="196" width="210" height="64" rx="12" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
   <text x="645" y="223" font-size="14.5" font-weight="700" fill="#1e2a3c" text-anchor="middle">Whisper</text>
-  <text x="645" y="244" font-size="12.5" fill="#55627a" text-anchor="middle">声を文字にする</text>
+  <text x="645" y="244" font-size="12.5" fill="#55627a" text-anchor="middle">音声をテキストに変換する</text>
 
   <rect x="540" y="282" width="210" height="64" rx="12" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
   <text x="645" y="309" font-size="14.5" font-weight="700" fill="#1e2a3c" text-anchor="middle">Kokoro</text>
-  <text x="645" y="330" font-size="12.5" fill="#55627a" text-anchor="middle">文字を声にする</text>
+  <text x="645" y="330" font-size="12.5" fill="#55627a" text-anchor="middle">テキストを音声に変換する</text>
 
   <!-- 共有のファイル -->
   <rect x="240" y="392" width="510" height="76" rx="12" fill="#f0f0f0" stroke="#9a9a9a" stroke-width="1.5" stroke-dasharray="6 4"/>
   <text x="495" y="421" font-size="14.5" font-weight="700" fill="#333" text-anchor="middle">共有のファイル(~/.voicemode/)</text>
-  <text x="495" y="445" font-size="12.5" fill="#555" text-anchor="middle">字幕 ・ セッションの記録(順番、話す相手、方式) ・ 読みがなの表 ・ 預かったメモ</text>
+  <text x="495" y="445" font-size="12.5" fill="#555" text-anchor="middle">字幕 ・ セッションの記録(順番、話す相手、方式) ・ 読み方の辞書 ・ 預かったメモ</text>
 
-  <!-- 字幕の窓 -->
+  <!-- 字幕ウィンドウ -->
   <rect x="240" y="506" width="230" height="70" rx="12" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
-  <text x="355" y="535" font-size="15" font-weight="700" fill="#1e2a3c" text-anchor="middle">字幕の窓</text>
+  <text x="355" y="535" font-size="15" font-weight="700" fill="#1e2a3c" text-anchor="middle">字幕ウィンドウ</text>
   <text x="355" y="558" font-size="12.5" fill="#55627a" text-anchor="middle">字幕を出す。操作を受け取る</text>
 
-  <!-- メモの見張り -->
+  <!-- メモの監視 -->
   <rect x="520" y="506" width="230" height="70" rx="12" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
-  <text x="635" y="535" font-size="15" font-weight="700" fill="#1e2a3c" text-anchor="middle">メモの見張り</text>
+  <text x="635" y="535" font-size="15" font-weight="700" fill="#1e2a3c" text-anchor="middle">メモの監視</text>
   <text x="635" y="558" font-size="12.5" fill="#55627a" text-anchor="middle">Claude の作業中に話したメモを預かる</text>
 
   <!-- Anthropic -->
   <rect x="812" y="76" width="164" height="84" rx="12" fill="#fdeeee" stroke="#d98a8a" stroke-width="1.5"/>
   <text x="894" y="108" font-size="15" font-weight="700" fill="#8a2f2f" text-anchor="middle">Anthropic</text>
-  <text x="894" y="132" font-size="12.5" fill="#8a4a4a" text-anchor="middle">届くのは文字だけ</text>
+  <text x="894" y="132" font-size="12.5" fill="#8a4a4a" text-anchor="middle">送られるのはテキストだけ</text>
   <text x="894" y="149" font-size="12.5" fill="#8a4a4a" text-anchor="middle">(キーボード入力と同じ)</text>
 
   <!-- 矢印 -->
@@ -71,7 +71,7 @@
   <line x1="330" y1="160" x2="330" y2="214" stroke="#1f6fd0" stroke-width="2" marker-end="url(#arrowBlue)"/>
   <text x="322" y="192" font-size="12" fill="#1f6fd0" text-anchor="end">読み上げる文</text>
   <line x1="380" y1="216" x2="380" y2="162" stroke="#1f6fd0" stroke-width="2" marker-end="url(#arrowBlue)"/>
-  <text x="388" y="192" font-size="12" fill="#1f6fd0">Whisper が文字にした、あなたの発言</text>
+  <text x="388" y="192" font-size="12" fill="#1f6fd0">認識された、あなたの発言</text>
 
   <!-- 会話のプログラム ⇄ Whisper / Kokoro -->
   <line x1="470" y1="248" x2="538" y2="230" stroke="#5b6470" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
@@ -87,16 +87,16 @@
   <line x1="355" y1="326" x2="355" y2="390" stroke="#5b6470" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
   <text x="365" y="364" font-size="12" fill="#5b6470">読み書き</text>
 
-  <!-- 字幕の窓 ⇄ 共有のファイル -->
+  <!-- 字幕ウィンドウ ⇄ 共有のファイル -->
   <line x1="355" y1="504" x2="355" y2="470" stroke="#5b6470" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
-  <!-- メモの見張り → 共有のファイル -->
+  <!-- メモの監視 → 共有のファイル -->
   <line x1="635" y1="504" x2="635" y2="470" stroke="#5b6470" stroke-width="1.8" marker-end="url(#arrow)"/>
 
-  <!-- あなた ⇄ 字幕の窓 -->
+  <!-- あなた ⇄ 字幕ウィンドウ -->
   <path d="M99,400 L99,541 L238,541" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
   <text x="108" y="470" font-size="12" fill="#5b6470">読む・押す</text>
 
   <!-- Claude Code ⇄ Anthropic -->
   <line x1="470" y1="118" x2="810" y2="118" stroke="#c05050" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
-  <text x="640" y="108" font-size="12.5" fill="#a03c3c" text-anchor="middle">文字だけ</text>
+  <text x="640" y="108" font-size="12.5" fill="#a03c3c" text-anchor="middle">テキストだけ</text>
 </svg>

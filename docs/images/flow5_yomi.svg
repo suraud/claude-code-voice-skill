@@ -10,7 +10,7 @@
 <text x="149.0" y="201.5" font-size="12.5" fill="#55627a" text-anchor="middle">に上げました</text>
 <rect x="310" y="92" width="250" height="154" rx="10" fill="#e8f1ff" stroke="#1f6fd0" stroke-width="1.5"/>
 <text x="435.0" y="148.5" font-size="14" fill="#0f3f85" font-weight="700" text-anchor="middle">会話のプログラムが変換</text>
-<text x="435.0" y="167.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">読みがなの表の語 → 読み</text>
+<text x="435.0" y="167.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">読み方の辞書の語 → 読み</text>
 <text x="435.0" y="184.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">{表記|読み} → 指定の読み</text>
 <text x="435.0" y="201.5" font-size="12.5" fill="#2c4f86" text-anchor="middle">数字 → 漢数字、小数は「てん」</text>
 <rect x="620" y="92" width="330" height="68" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
@@ -25,12 +25,12 @@
 <rect x="24" y="304" width="952" height="236" rx="12" fill="#f7f9fc" stroke="#d5dce6" stroke-width="1"/>
 <text x="500.0" y="326" font-size="13.5" fill="#33415a" font-weight="700" text-anchor="middle">あなたが話すとき:聞き取った言葉を、正しいつづりに直してから、Claude に渡す</text>
 <rect x="44" y="360" width="150" height="120" rx="10" fill="#fff7e6" stroke="#e0b25a" stroke-width="1.5"/>
-<text x="119.0" y="408.0" font-size="14" fill="#7a5200" font-weight="700" text-anchor="middle">あなたの声</text>
+<text x="119.0" y="408.0" font-size="14" fill="#7a5200" font-weight="700" text-anchor="middle">あなたの発話</text>
 <text x="119.0" y="427.0" font-size="12.5" fill="#5c4a1e" text-anchor="middle">「ワイファイの</text>
 <text x="119.0" y="444.0" font-size="12.5" fill="#5c4a1e" text-anchor="middle">設定を見て」</text>
 <rect x="236" y="348" width="230" height="144" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
 <text x="351.0" y="391.0" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">Whisper</text>
-<text x="351.0" y="410.0" font-size="12.5" fill="#55627a" text-anchor="middle">声を文字にする</text>
+<text x="351.0" y="410.0" font-size="12.5" fill="#55627a" text-anchor="middle">音声をテキストに変換する</text>
 <text x="351.0" y="427.0" font-size="12.5" fill="#55627a" text-anchor="middle"></text>
 <text x="351.0" y="444.0" font-size="12.5" fill="#55627a" text-anchor="middle">よく使う語を、</text>
 <text x="351.0" y="461.0" font-size="12.5" fill="#55627a" text-anchor="middle">あらかじめ教えておく</text>
@@ -47,5 +47,5 @@
 <path d="M194,420 L234,420" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
 <path d="M466,420 L506,420" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
 <path d="M758,420 L798,420" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
-<text x="500" y="524" font-size="12" fill="#55627a" text-anchor="middle">読みがなの表は 2 つ。共通の表(スキルに入っている、一般の語)と、自分用の表(Mac の中だけ。固有の語はこちら)。</text>
+<text x="500" y="524" font-size="12" fill="#55627a" text-anchor="middle">読み方の辞書は 2 つ。共通の辞書(スキルに入っている、一般の語)と、個人用の辞書(Mac 上だけ。固有の語はこちら)。</text>
 </svg>
