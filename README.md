@@ -85,6 +85,7 @@ ln -s <このリポジトリの場所>/skills/10-voice ~/.claude/skills/10-voice
 | 字幕の窓 | `skills/10-voice/scripts/caption.swift`(初回に自動でビルドされる) |
 | 声のメモ | `listen.py` が預かる。Claude の作業中は、見張り(`listen.py --memo-watch`。`voice.sh on` が起動する)が、キーが押されている間だけマイクを開く |
 | 確認待ちの知らせ | Claude Code の hook(`Notification`)から `voice.sh notify` を呼ぶ |
+| 会話が止まらないようにする | Claude Code の hook(`Stop`)から `voice.sh stop-check` を呼ぶ。聞き取りを呼ばずに返事を終えようとしたら、1 回だけ引き止める |
 
 ## なぜこの作りか
 

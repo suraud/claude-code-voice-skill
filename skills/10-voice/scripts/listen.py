@@ -348,6 +348,7 @@ def release_turn(name: str) -> None:
             holder, _, _ = read_floor(f)
             if holder == name:
                 write_floor(f, name, False)
+        session_set_state(name, "away")  # 席を外した扱い。次に聞き取りを始めるまで、ターンの終わりを引き止めない
     except OSError:
         pass
 
@@ -1220,6 +1221,54 @@ def notify() -> int:
     return 0
 
 
+STOP_CHECK_RECENT_S = 1800  # 最後に声で話してから、この秒数を過ぎたセッションは、引き止めない
+
+
+def stop_check() -> int:
+    """Claude Code の hook(Stop)から呼ばれる。音声会話の途中で、聞き取りを呼ばずにターンを終えようとしたら、引き止める。
+
+    標準入力の JSON を読み、引き止めるときは {"decision": "block", "reason": …} を出力する。
+    引き止めるのは 1 回だけ。次のどれかに当てはまれば、何もしない(そのままターンを終えさせる)。
+    - すでに引き止めたあと(stop_hook_active)
+    - このセッションが、音声で会話していない(記録にない)。ミュート中、席を外した扱い(away)
+    - 最後に声で話してから、STOP_CHECK_RECENT_S を過ぎている
+    - 読み上げのサービスが動いていない
+    - 聞き取りが動いている(バックグラウンドで順番を待っている場合を含む)
+    """
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return 0
+    if not isinstance(data, dict) or data.get("stop_hook_active"):
+        return 0
+    name = session_name(os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd"))
+    rec = read_record() or {}
+    me = (rec.get("sessions") or {}).get(name) if isinstance(rec.get("sessions"), dict) else None
+    if rec.get("boot") != boot_id() or not me or me.get("state") in ("muted", "away"):
+        return 0
+    if time.time() - (me.get("t") or 0) > STOP_CHECK_RECENT_S:
+        return 0
+    if me.get("lpid") and pid_alive(me["lpid"]):
+        return 0  # 聞き取りが動いている
+    for task in data.get("background_tasks") or []:
+        if isinstance(task, dict) and "listen" in str(task.get("command", "")) and "voice.sh" in str(task.get("command", "")):
+            return 0  # バックグラウンドで、聞き取りが順番を待っている
+    try:
+        import socket
+
+        socket.create_connection(("127.0.0.1", 8880), timeout=0.5).close()
+    except OSError:
+        return 0  # 読み上げのサービスが止まっている
+    print(json.dumps({
+        "decision": "block",
+        "reason": "音声会話の途中です。聞き取りを呼ばずにターンを終えると、利用者の声が届かなくなります。"
+                  "voice.sh listen --say '…' で聞き取りに戻ってください(利用者に操作を頼んだなら、完了の返事を聞き取る。"
+                  "順番が来ないなら、--wait 21600 を付けてバックグラウンドで実行する)。"
+                  "利用者が音声の終了を望んでいるなら、voice.sh end を実行してください。",
+    }, ensure_ascii=False))
+    return 0
+
+
 def memo_watch() -> int:
     """Claude の作業中(どのセッションもマイクを開いていない間)に、キーを押して話したメモを預かる。
 
@@ -1335,6 +1384,7 @@ def main() -> int:
     ap.add_argument("--mic", choices=("builtin", "default"), help="聞き取りに使うマイクを選ぶ。builtin: Mac 本体のマイク。default: 既定の入力(イヤホンなど)。全セッションで共通")
     ap.add_argument("--print-mode", action="store_true", help="いま選ばれている聞き取りの方式を表示する(voice.sh on と status が呼ぶ)")
     ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
+    ap.add_argument("--stop-check", action="store_true", help="hook 用。音声会話の途中で、聞き取りを呼ばずにターンを終えようとしたら、引き止める")
     ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
     ap.add_argument("--memo-watch", action="store_true", help="Claude の作業中に、キーを押して話したメモを預かる見張りとして動く(voice.sh on が起動する)")
     ap.add_argument("--file", help="検証用。マイクの代わりに WAV ファイルを読む")
@@ -1343,6 +1393,8 @@ def main() -> int:
 
     if args.notify:
         return notify()
+    if args.stop_check:
+        return stop_check()
     if args.memo_watch:
         return memo_watch()
     if args.yomi:
