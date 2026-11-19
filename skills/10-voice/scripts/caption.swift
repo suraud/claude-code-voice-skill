@@ -20,6 +20,7 @@
 // - 窓の左下に、読み上げの再生位置のつまみがある。読み上げ中は進み、動かすと、その位置から読み直す。
 //   読み終えたあとも、そのセッションが返事を待っている間は使える。
 //   読み上げ中の発言は、読み終えた部分を明るく、これから読む部分を薄く表示する。つまみを動かすと、境目も動く
+// - 右上の「⌘ キー」/「以上」のボタンで、聞き取りの方式を切り替える(全セッション共通)
 // - 右上の「◐」を押すと、窓の色を、暗い色と明るい色で切り替える(選んだ色は覚えておく)
 // - 右上の「?」を押すと、使い方の一覧を表示する。もう一度押すと、字幕に戻る
 // - 右上の × で隠せる。隠しても、次の読み上げや発言でまた出る
@@ -76,9 +77,13 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("ポン", "メモを預かった"),
         ("低い音", "聞き取れなかった。もう一度、押して話す"),
     ]),
+    ("キーを使わない方式", [
+        ("「⌘ キー」のボタンを押す", "「以上」と言うまで聞く方式に変わる。全セッション共通で、次の聞き取りから効く"),
+        ("話し方", "合図のあとに話し、「以上」と言って終える。読み上げは、声をかけると止まる。マイクは開いたまま"),
+        ("「ミュート」とだけ言う", "マイクを閉じる。再開は /10-voice"),
+    ]),
     ("始め方と終わり方", [
-        ("/10-voice", "音声で会話する(キーを押して話す)"),
-        ("/10-voice hands", "キーを使わない。「以上」と言って話し終える"),
+        ("/10-voice", "音声で会話する"),
         ("/10-voice off", "サービスを止める(使わない日)"),
         ("「終わり」と言う", "音声の会話を終える"),
     ]),
@@ -166,6 +171,18 @@ func loadSpeed() -> Double {
 
 func setSpeed(_ speed: Double) {
     updateRecord { $0["speed"] = speed }
+}
+
+/// 聞き取りの方式を読む。key: キーを押している間だけ聞く。word: 「以上」と言うまで聞く
+func loadMode() -> String {
+    guard let data = FileManager.default.contents(atPath: sessionsPath),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let mode = root["mode"] as? String, mode == "word" else { return "key" }
+    return mode
+}
+
+func setMode(_ mode: String) {
+    updateRecord { $0["mode"] = mode }
 }
 
 /// 話す相手を書く。nil は、相手を選ばない(「すべて」)
@@ -400,6 +417,8 @@ final class CaptionController: NSObject {
     var claudeColor: NSColor { theme.claude }
     var userColor: NSColor { theme.user }
     let themeButton = NSButton(frame: .zero)
+    let modeButton = NSButton(frame: .zero)
+    var mode = "key"
     let closeButton = NSButton(frame: .zero)
 
     override init() {
@@ -531,7 +550,33 @@ final class CaptionController: NSObject {
         themeButton.autoresizingMask = [.minXMargin]
         themeButton.toolTip = "押すと、窓の色を切り替える(暗い色 / 明るい色)。裏の画面で見やすいほうを選ぶ"
         bar.addSubview(themeButton)
+
+        modeButton.frame = NSRect(x: bar.bounds.width - 290, y: 5, width: 64, height: 20)
+        modeButton.isBordered = false
+        modeButton.wantsLayer = true
+        modeButton.layer?.cornerRadius = 6
+        modeButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        modeButton.target = self
+        modeButton.action = #selector(toggleMode(_:))
+        modeButton.autoresizingMask = [.minXMargin]
+        bar.addSubview(modeButton)
+        mode = loadMode()
         applyTheme()
+    }
+
+    @objc func toggleMode(_ sender: Any?) {
+        mode = mode == "key" ? "word" : "key"
+        setMode(mode)
+        styleMode()
+    }
+
+    func styleMode() {
+        modeButton.title = mode == "key" ? "⌘ キー" : "「以上」"
+        modeButton.contentTintColor = theme.fg
+        modeButton.layer?.backgroundColor = theme.fg.withAlphaComponent(mode == "key" ? 0.14 : 0.35).cgColor
+        modeButton.toolTip = mode == "key"
+            ? "いまは、右 ⌘ を押している間だけ聞く方式。押すと、「以上」と言うまで聞く方式に変わる(全セッション共通。次の聞き取りから)"
+            : "いまは、「以上」と言うまで聞く方式。マイクは開いたまま。押すと、右 ⌘ を押している間だけ聞く方式に戻る(全セッション共通。次の聞き取りから)"
     }
 
     @objc func toggleTheme(_ sender: Any?) {
@@ -554,6 +599,7 @@ final class CaptionController: NSObject {
         stylePause()
         styleHelp()
         styleSpeed()
+        styleMode()
         bar.needsDisplay = true
         panel.contentView?.needsDisplay = true
     }
@@ -890,6 +936,11 @@ final class CaptionController: NSObject {
         if !newCaption && !sessionsChanged && !focusChanged && !first { return }
         sessions = newSessions
 
+        let nowMode = loadMode()
+        if nowMode != mode {
+            mode = nowMode
+            styleMode()
+        }
         let nowPaused = loadPaused()
         if nowPaused != paused {
             paused = nowPaused

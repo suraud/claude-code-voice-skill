@@ -156,6 +156,7 @@ case "${1:-}" in
     caption_on
     memo_on
     "$PY" "$(dirname "$0")/listen.py" --unmute 2>/dev/null   # このセッションがミュート中なら、解く
+    "$PY" "$(dirname "$0")/listen.py" --print-mode 2>/dev/null
     ;;
   off)
     memo_off
@@ -166,6 +167,7 @@ case "${1:-}" in
   status)
     status_one whisper "$WHISPER_URL" 2022
     status_one kokoro "$KOKORO_URL" 8880
+    [ -x "$PY" ] && "$PY" "$(dirname "$0")/listen.py" --print-mode 2>/dev/null
     ;;
   listen)
     # 読み上げてから、利用者の発言を聞き取り、文字にして出力する(キーを押している間だけ聞く。--mode word で合言葉の方式)。

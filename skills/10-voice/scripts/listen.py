@@ -198,7 +198,9 @@ def sessions_update(name: str, state: str | None = None) -> dict:
             except ValueError:
                 data = {}
             if data.get("boot") != boot_id() or not isinstance(data.get("sessions"), dict):
-                data = {"boot": boot_id(), "sessions": {}}
+                # Mac を起動し直した。セッションの記録は捨て、方式と速さの選択は引き継ぐ
+                keep = {k: data[k] for k in ("mode", "speed") if k in data}
+                data = {"boot": boot_id(), "sessions": {}, **keep}
             me = data["sessions"].setdefault(name, {"lane": "normal", "state": "", "t": 0})
             if me.get("lane") not in LANES:
                 me["lane"] = "normal"
@@ -460,6 +462,16 @@ def transcribe(client: httpx.Client, pcm: bytes) -> str:
     )
     r.raise_for_status()
     return " ".join(r.json().get("text", "").split())
+
+
+def listen_mode() -> str:
+    """字幕の窓で選ばれている、聞き取りの方式(key または word)。記録がなければ key。"""
+    try:
+        with open(SESSIONS_PATH, encoding="utf-8") as f:
+            mode = json.load(f).get("mode")
+        return mode if mode in ("key", "word") else "key"
+    except (OSError, ValueError):
+        return "key"
 
 
 def speech_speed() -> float:
@@ -877,8 +889,8 @@ def memo_watch() -> int:
         except (OSError, ValueError):
             return None
         sessions = rec.get("sessions") if isinstance(rec.get("sessions"), dict) else {}
-        if rec.get("boot") != boot_id() or rec.get("paused"):
-            return None
+        if rec.get("boot") != boot_id() or rec.get("paused") or rec.get("mode") == "word":
+            return None  # 合言葉の方式では、キーを使わない
         name = rec.get("focus") if rec.get("focus") in sessions else read_floor(lock)[0]
         if name not in sessions or sessions[name].get("state") == "muted":
             return None
@@ -959,13 +971,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="読み上げてから、合言葉が聞こえるまで聞き続け、文字にして出力する")
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
     ap.add_argument("--name", default=session_name(), help="このセッションの呼び名(既定: 作業フォルダの名前)")
-    ap.add_argument("--mode", choices=("key", "word"), default="key", help="聞き取りの方式。key: キーを押している間だけ聞く(既定)。word: 合言葉が聞こえるまで聞く")
+    ap.add_argument("--mode", choices=("key", "word"), default=None, help="聞き取りの方式。key: キーを押している間だけ聞く。word: 合言葉が聞こえるまで聞く。指定しなければ、字幕の窓で選ばれている方式(選ばれていなければ key)。検証のとき以外は指定しない")
     ap.add_argument("--wait", type=float, default=LOCK_WAIT_S, help=f"話す順番を待つ秒数の上限(既定: {LOCK_WAIT_S})。バックグラウンドで長く待つときに大きくする")
     ap.add_argument("--end-word", default="以上", help="発言の終わりを示す合言葉(既定: 以上)")
     ap.add_argument("--idle", type=float, default=300, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 300)")
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")
+    ap.add_argument("--print-mode", action="store_true", help="いま選ばれている聞き取りの方式を表示する(voice.sh on と status が呼ぶ)")
     ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
     ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
     ap.add_argument("--memo-watch", action="store_true", help="Claude の作業中に、キーを押して話したメモを預かる見張りとして動く(voice.sh on が起動する)")
@@ -977,6 +990,10 @@ def main() -> int:
         return notify()
     if args.memo_watch:
         return memo_watch()
+    if args.print_mode:
+        print("方式: キーを押している間だけ聞く(右コマンド)" if listen_mode() == "key"
+              else "方式: 「以上」と言うまで聞く(マイクは開いたまま)")
+        return 0
     if args.unmute:
         if sessions_update(args.name).get(args.name, {}).get("state") == "muted":
             session_set_state(args.name, "working")
@@ -987,6 +1004,8 @@ def main() -> int:
             session_end(args.name)
         return 0
 
+    if args.mode is None:
+        args.mode = listen_mode()  # 方式は、全セッションで共通。字幕の窓のボタンで切り替える
     key_mode = args.mode == "key" and not args.file
     key_note = ""
     if key_mode:
