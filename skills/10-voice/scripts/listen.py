@@ -938,12 +938,6 @@ def memo_watch() -> int:
                         text = transcribe(client, pcm)
                 except Exception as e:  # Whisper に届かない。預かれなかったことを音で知らせる
                     print(f"メモの見張り: 文字にできませんでした({type(e).__name__}: {e})", file=sys.stderr)
-            if MUTE_PATTERN.match(text):
-                # 作業中でも、声でミュートにできる。以後、このセッションは話しかけず、見張りもマイクを開かない
-                session_set_state(name, "muted")
-                caption(name, "あなた", "(ミュート)")
-                play(CUE_END)
-                continue
             m = MEMO_PATTERN.match(text)
             if m and m.group(1).strip():
                 text = m.group(1)
@@ -1022,7 +1016,8 @@ def main() -> int:
                         print(f"[区切り] {text}", file=sys.stderr)
                     if not text:
                         continue
-                    if MUTE_PATTERN.match(text):
+                    if not key_mode and MUTE_PATTERN.match(text):
+                        # ミュートは、合言葉の方式だけ。キーの方式では、押していない間はマイクが閉じているので要らない
                         state["reason"] = "mute"
                         stop.set()
                         continue
