@@ -77,6 +77,10 @@ CUE_END = "/System/Library/Sounds/Glass.aiff"
 # 複数のセッションで同時に使うときの順番待ち。ロックを持つセッションだけが話して聞く。
 # ロックはプロセスが終わると自動で外れる。ファイルには、最後に使ったセッションの名前だけを書く
 LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice.lock")
+# マイクを閉じた時刻を残すファイル。Bluetooth のイヤホンは、マイクを閉じた直後に音楽用の接続へ戻り、
+# その間の音が乱れる。読み上げは、最後にマイクを閉じてから MIC_SETTLE_S たつのを待って始める
+MIC_CLOSED_PATH = os.path.expanduser("~/.voicemode/10-voice-mic-closed")
+MIC_SETTLE_S = 1.5
 SPEAK_LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice-speak.lock")  # 読み上げの間だけ持つ。声を重ねないため
 LOCK_WAIT_S = 420    # 順番を待つ上限。超えたら、読み上げずに戻る
 MIN_LISTEN_S = 120   # 長く待ったあとでも、聞き取りに使える最低限の秒数
@@ -192,6 +196,12 @@ def sessions_update(name: str, state: str | None = None) -> dict:
             if state is not None:
                 me["state"] = state
                 me["t"] = int(time.time())
+                # 待っている、話している間は、聞き取りのプロセス番号を残す。プロセスが消えたら、
+                # 字幕の窓が「待っている」表示をやめる(声をあきらめたセッションを、待機中に見せないため)
+                if state in ("waiting", "talking"):
+                    me["lpid"] = os.getpid()
+                else:
+                    me.pop("lpid", None)
                 dirty = True
             if dirty:
                 f.seek(0)
@@ -269,7 +279,7 @@ def write_floor(f, name: str, active: bool) -> None:
     f.flush()
 
 
-def acquire_turn(name: str):
+def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S):
     """順番を取る。戻り値は (ロックのファイル, 直前に使ったのが別のセッションか, 待った秒数)。
 
     ロックは 2 段になっている。
@@ -279,7 +289,7 @@ def acquire_turn(name: str):
       同じセッションが聞き取りを再開しないまま FLOOR_HOLD_S 秒たつと、ほかのセッションも話せる
     - 「以上」で話し終えたあと(Claude が作業している間)は、早い者勝ちで、ほかのセッションも話せる
 
-    LOCK_WAIT_S 待っても取れなければ (None, False, 待った秒数) を返す。
+    wait_s 秒待っても取れなければ (None, False, 待った秒数) を返す。
     """
     start = time.time()
     f = open(LOCK_PATH, "a+", encoding="utf-8")
@@ -299,7 +309,7 @@ def acquire_turn(name: str):
             fcntl.flock(f, fcntl.LOCK_UN)
         except OSError:
             pass
-        if time.time() - start >= LOCK_WAIT_S:
+        if time.time() - start >= wait_s:
             f.close()
             return None, False, time.time() - start
         time.sleep(0.3)
@@ -377,6 +387,29 @@ def key_down() -> bool:
     cg = _cg[0]
     # 0 は、すべての入力元を合わせた状態。キーの状態か、修飾キーのビットのどちらかで判定する
     return bool(cg.CGEventSourceKeyState(0, TALK_KEY)) or bool(cg.CGEventSourceFlagsState(0) & TALK_KEY_FLAG)
+
+
+def mic_closed() -> None:
+    """マイクを閉じた時刻を残す(どのセッションの読み上げも、これを見て少し待つ)。"""
+    try:
+        with open(MIC_CLOSED_PATH, "w", encoding="utf-8") as f:
+            f.write(f"{time.time():.2f}")
+        os.chmod(MIC_CLOSED_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def wait_mic_settle(cancel: threading.Event | None = None) -> None:
+    """最後にマイクを閉じてから MIC_SETTLE_S たつまで待つ。"""
+    try:
+        with open(MIC_CLOSED_PATH, encoding="utf-8") as f:
+            closed = float(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return
+    while 0 <= time.time() - closed < MIC_SETTLE_S:
+        if cancel is not None and cancel.is_set():
+            return
+        time.sleep(0.05)
 
 
 def play(path: str) -> None:
@@ -470,6 +503,7 @@ class Speaker:
                         return
                     time.sleep(0.2)
                     waited += 0.2
+            wait_mic_settle(self.cancel)
             with speak_lock, sd.RawOutputStream(samplerate=KOKORO_RATE, channels=1, dtype="int16") as out:
                 for i in range(0, len(self.pcm), step):
                     if self.cancel.is_set():
@@ -491,23 +525,26 @@ def mic_frames(stop: threading.Event, on_ready):
     def callback(indata, frames, time_info, status):
         q.put(bytes(indata))
 
-    with sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback):
-        buf = b""
-        received = 0
-        ready = False
-        while not stop.is_set():
-            try:
-                chunk = q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            buf += chunk
-            received += len(chunk)
-            if not ready and received >= WARMUP_S * RATE * 2:
-                ready = True
-                on_ready()
-            while len(buf) >= FRAME_BYTES:
-                yield buf[:FRAME_BYTES]
-                buf = buf[FRAME_BYTES:]
+    try:
+        with sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback):
+            buf = b""
+            received = 0
+            ready = False
+            while not stop.is_set():
+                try:
+                    chunk = q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                buf += chunk
+                received += len(chunk)
+                if not ready and received >= WARMUP_S * RATE * 2:
+                    ready = True
+                    on_ready()
+                while len(buf) >= FRAME_BYTES:
+                    yield buf[:FRAME_BYTES]
+                    buf = buf[FRAME_BYTES:]
+    finally:
+        mic_closed()
 
 
 def key_frames(stop: threading.Event, on_ready):
@@ -529,7 +566,9 @@ def key_frames(stop: threading.Event, on_ready):
         def callback(indata, frames, time_info, status):
             q.put(bytes(indata))
 
-        with sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback):
+        stream = sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback)
+        stream.start()
+        try:
             buf = b""
             received = 0
             ready = False
@@ -551,6 +590,11 @@ def key_frames(stop: threading.Event, on_ready):
                     yield frame if ready else None
                 if not ready and not key_down():
                     break  # 合図の前に離した(ショートカットなど)。何もしない
+        finally:
+            # 聞き取りを途中でやめたときも、ここでマイクを閉じる
+            stream.stop()
+            stream.close()
+            mic_closed()
 
 
 def file_frames(path: str, stop: threading.Event):
@@ -753,6 +797,7 @@ def main() -> int:
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
     ap.add_argument("--name", default=session_name(), help="このセッションの呼び名(既定: 作業フォルダの名前)")
     ap.add_argument("--mode", choices=("key", "word"), default="key", help="聞き取りの方式。key: キーを押している間だけ聞く(既定)。word: 合言葉が聞こえるまで聞く")
+    ap.add_argument("--wait", type=float, default=LOCK_WAIT_S, help=f"話す順番を待つ秒数の上限(既定: {LOCK_WAIT_S})。バックグラウンドで長く待つときに大きくする")
     ap.add_argument("--end-word", default="以上", help="発言の終わりを示す合言葉(既定: 以上)")
     ap.add_argument("--idle", type=float, default=300, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 300)")
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
@@ -864,11 +909,12 @@ def main() -> int:
             # 利用者がミュートにしている(聞き取り中、または作業中に「ミュート」と言った)。話しかけない
             print("[ミュート: 利用者がミュートにしています。読み上げていません。声で呼びかけず、画面に「再開するときは /10-voice と入力してください」と書いて待ってください。利用者が再開を頼んだら、voice.sh on を実行してから聞き取りを始めます]")
             return 0
-        lock, switched, waited = acquire_turn(args.name)
+        lock, switched, waited = acquire_turn(args.name, args.wait)
         if lock is None:
             print("[順番待ち: まだ話せません(ほかのセッションが会話中、利用者が別のセッションを話す相手に選んでいる、このセッションが「あとで」に置かれている、停止ボタンが押されている、のいずれか)。読み上げていません]")
             return 0
-        args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
+        if args.wait <= LOCK_WAIT_S:  # 長く待つ指定(バックグラウンド)のときは、コマンドの制限時間を気にしない
+            args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
         if switched and say:
             say = f"{args.name}、からです。{say}"  # 別のセッションから切り替わったときは名乗る
     speaker = Speaker(say) if say and not from_file else None
@@ -1023,6 +1069,7 @@ def main() -> int:
             break
 
     stop.set()
+    frames.close()  # ここでマイクを閉じる(文字にするのを待つ間、開いたままにしない)
     cut_short = bool(speaker) and speaking and not barged  # 読み上げの途中で、停止や保留になった
     if speaker:
         speaker.cancel.set()

@@ -52,7 +52,7 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("タブを押す", "そのセッションが話す相手になる。ほかのセッションは止まって待つ"),
         ("「すべて」を押す", "相手を選ばない。「いま話す」のセッションが順番に話す"),
         ("タブをつまんで移す", "「あとで」に置くと、戻すまで話しかけてこない"),
-        ("丸の色", "緑: 会話中　橙: 話したくて待っている　灰: 作業中など"),
+        ("丸の色", "緑: 会話中　橙: 話したくて待っている　灰: 作業中、または声では待っていない(画面を見る)"),
     ]),
     ("窓", [
         ("⏸ 停止 / ▶ 再開", "すべてのセッションが、話すのも聞くのもやめる(会議のとき)"),
@@ -137,8 +137,12 @@ func loadSessions() -> [String: SessionInfo] {
     var out: [String: SessionInfo] = [:]
     for (name, v) in sessions {
         let lane = v["lane"] as? String ?? "normal"
-        out[name] = SessionInfo(lane: lanes.contains { $0.key == lane } ? lane : "normal",
-                                state: v["state"] as? String ?? "")
+        var state = v["state"] as? String ?? ""
+        // 「待っている」「話している」のに、聞き取りのプロセスがもう動いていなければ、灰色にする
+        // (声をあきらめて、画面で待っているセッション)
+        if let lpid = v["lpid"] as? Int, lpid > 0, state == "waiting" || state == "talking",
+           kill(pid_t(lpid), 0) != 0 && errno == ESRCH { state = "" }
+        out[name] = SessionInfo(lane: lanes.contains { $0.key == lane } ? lane : "normal", state: state)
     }
     return out
 }
