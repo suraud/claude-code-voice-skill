@@ -510,6 +510,49 @@ def mic_frames(stop: threading.Event, on_ready):
                 buf = buf[FRAME_BYTES:]
 
 
+def key_frames(stop: threading.Event, on_ready):
+    """キーの方式の音声。キーが押されている間だけマイクを開く。
+
+    30 ミリ秒ごとに 1 つ返す。マイクを閉じている間と、開いた直後(Bluetooth が音を拾えない間)は None。
+    開いてから WARMUP_S たつと on_ready を呼び(合図を鳴らす)、そこからの音声を返す。
+    キーを離して RELEASE_GRACE_S たつと、マイクを閉じる。
+    """
+    import sounddevice as sd
+
+    while not stop.is_set():
+        if not key_down():
+            time.sleep(FRAME_S)
+            yield None
+            continue
+        q: queue.Queue = queue.Queue()
+
+        def callback(indata, frames, time_info, status):
+            q.put(bytes(indata))
+
+        with sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback):
+            buf = b""
+            received = 0
+            ready = False
+            released = 0.0
+            while not stop.is_set() and released < RELEASE_GRACE_S:
+                try:
+                    chunk = q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                buf += chunk
+                received += len(chunk)
+                if not ready and received >= WARMUP_S * RATE * 2:
+                    ready = True
+                    buf = b""  # 合図より前の音は捨てる
+                    on_ready()
+                while len(buf) >= FRAME_BYTES:
+                    frame, buf = buf[:FRAME_BYTES], buf[FRAME_BYTES:]
+                    released = 0.0 if key_down() else released + FRAME_S
+                    yield frame if ready else None
+                if not ready and not key_down():
+                    break  # 合図の前に離した(ショートカットなど)。何もしない
+
+
 def file_frames(path: str, stop: threading.Event):
     with wave.open(path, "rb") as w:
         if (w.getframerate(), w.getnchannels(), w.getsampwidth()) != (RATE, 1, 2):
@@ -837,7 +880,16 @@ def main() -> int:
         else:
             play(CUE_START)
 
-    frames = file_frames(args.file, stop) if from_file else mic_frames(stop, on_ready)
+    if from_file:
+        frames = file_frames(args.file, stop)
+    elif key_mode:
+        # キーの方式では、マイクを開かずに読み上げを始める。マイクは、キーが押されたときだけ開く
+        if speaker:
+            caption(args.name, "Claude", args.say)
+            speaker.start()
+        frames = key_frames(stop, lambda: play(CUE_START))
+    else:
+        frames = mic_frames(stop, on_ready)
 
     recent = collections.deque(maxlen=START_WINDOW)
     preroll = collections.deque(maxlen=PREROLL_FRAMES)
@@ -875,17 +927,18 @@ def main() -> int:
         elapsed += FRAME_S
         if key_mode:
             down = key_down()
-            if down:
-                if not talking and not in_speech:
-                    # 押した瞬間から録る。声の判定を待つと、話し始めが欠けることがある
+            if frame is not None:
+                # マイクが開き、合図が鳴ったあとの音声。ここから録る(声の判定を待つと、話し始めが欠ける)
+                if not talking:
+                    talking = True
                     in_speech = True
-                    segment = list(preroll)
+                    segment = []
                     voiced_frames = 0
                     silent_run = 0
                     preroll.clear()
                     hold_frames = 0
-                talking = True
                 hold_frames += 1
+            if down:
                 release_run = 0
             elif talking:
                 release_run += 1
@@ -906,10 +959,10 @@ def main() -> int:
                         play(CUE_MEMO)  # メモを預かった。聞き取りは続ける
                     elif hold_frames * FRAME_S >= KEY_MIN_HOLD_S:
                         play(CUE_MISS)  # 押して話したのに、文字にならなかった。もう一度話してもらう
-        # キーの方式では、押していない間の音を捨てる(声の判定もしない)
-        voiced = vad.is_speech(frame, RATE) if (talking or not key_mode) else False
+        # キーの方式では、マイクを閉じている間は音声がない(frame は None)
+        voiced = vad.is_speech(frame, RATE) if frame is not None else False
         recent.append(voiced)
-        if args.verbose:
+        if args.verbose and frame is not None:
             total_frames += 1
             total_voiced += voiced
             peak = max(peak, max(abs(v) for v in array.array("h", frame)))
@@ -924,13 +977,15 @@ def main() -> int:
             since_voice = 0.0
             if speaker.done.is_set():
                 speaking = False
-                if not barged:
-                    play(CUE_START)
+                if not barged and not key_mode:
+                    play(CUE_START)  # キーの方式では鳴らさない。合図は、キーを押してマイクが開いたときに鳴る
             elif not barged and (down if key_mode else in_speech and voiced_frames * FRAME_S >= BARGE_VOICED_S):
                 barged = True
                 speaker.cancel.set()
 
-        if in_speech:
+        if frame is None:
+            pass
+        elif in_speech:
             segment.append(frame)
             if voiced:
                 voiced_frames += 1
