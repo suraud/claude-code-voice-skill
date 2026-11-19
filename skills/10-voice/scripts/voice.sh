@@ -134,11 +134,12 @@ memo_on() {
     # スクリプトが新しくなっていたら、動かし直す
     [ "$(dirname "$0")/listen.py" -nt "$HOME/.voicemode/10-voice-memo-watch.lock" ] || { echo "メモ: 見張りは動いています"; return 0; }
     pkill -f "listen.py --memo-watch" >/dev/null 2>&1
-    sleep 0.5
+    for _ in 1 2 3 4 5 6 7 8 9 10; do memo_running || break; sleep 0.5; done   # 古い見張りが終わるのを待つ
   fi
   touch "$HOME/.voicemode/10-voice-memo-watch.lock"
   nohup "$PY" "$(cd "$(dirname "$0")" && pwd -P)/listen.py" --memo-watch >/dev/null 2>"$HOME/.voicemode/10-voice-memo-watch.err" &
-  echo "メモ: 見張りを始めました"
+  sleep 1
+  if memo_running; then echo "メモ: 見張りを始めました"; else echo "メモ: 見張りを始められませんでした(作業中のメモは使えません。会話はできます)"; fi
 }
 
 memo_off() {
@@ -154,6 +155,7 @@ case "${1:-}" in
     start_one kokoro "$KOKORO_URL" 8880
     caption_on
     memo_on
+    "$PY" "$(dirname "$0")/listen.py" --unmute 2>/dev/null   # このセッションがミュート中なら、解く
     ;;
   off)
     memo_off

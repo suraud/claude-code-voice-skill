@@ -91,7 +91,7 @@ CAPTION_DIR = os.path.expanduser("~/.voicemode/10-voice-captions")
 # セッションごとのファイルに預かる。そのセッションが次に聞き取りを終えるときに、出力に付けて渡し、消す
 MEMO_DIR = os.path.expanduser("~/.voicemode/10-voice-memos")
 MEMO_WATCH_LOCK = os.path.expanduser("~/.voicemode/10-voice-memo-watch.lock")
-MEMO_MIN_HOLD_S = 0.4    # 見張りは、キーがこの秒数押され続けてからマイクを開く(ショートカットで開かないため)
+MEMO_MIN_HOLD_S = 0.8    # 見張りは、キーがこの秒数押され続けてからマイクを開く(ショートカットで開かないため)
 CUE_MEMO = "/System/Library/Sounds/Pop.aiff"   # メモを預かった合図
 
 BOUNDARY = r"\s。、．，.,!?！？…・"
@@ -185,17 +185,15 @@ def sessions_update(name: str, state: str | None = None) -> dict:
                 me["lane"] = "normal"
             # Claude Code のプロセス番号を残す。終了したセッションを、字幕の窓がタブから消すため
             pid = os.environ.get("CLAUDE_PID", "")
+            dirty = me["t"] == 0  # 記録に加えたばかり
             if pid.isdigit() and me.get("pid") != int(pid):
                 me["pid"] = int(pid)
-                me["t"] = me.get("t") or 0
-                f.seek(0)
-                f.truncate()
-                f.write(json.dumps(data, ensure_ascii=False))
-            changed = state is not None and me.get("state") != state
+                dirty = True
             if state is not None:
                 me["state"] = state
                 me["t"] = int(time.time())
-            if changed or me["t"] == 0 or state is not None:
+                dirty = True
+            if dirty:
                 f.seek(0)
                 f.truncate()
                 f.write(json.dumps(data, ensure_ascii=False))
@@ -205,6 +203,23 @@ def sessions_update(name: str, state: str | None = None) -> dict:
             return data["sessions"]
     except OSError:
         return {name: {"lane": "normal"}}
+
+
+def session_set_state(name: str, state: str) -> None:
+    """記録にあるセッションの状態だけを書き換える(メモの見張りが、声でのミュートを反映するために使う)。"""
+    try:
+        with open(SESSIONS_PATH, "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            data = json.loads(f.read() or "{}")
+            me = data.get("sessions", {}).get(name) if isinstance(data.get("sessions"), dict) else None
+            if me is not None:
+                me["state"] = state
+                me["t"] = int(time.time())
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(data, ensure_ascii=False))
+    except (OSError, ValueError):
+        pass
 
 
 def session_end(name: str) -> None:
@@ -591,8 +606,6 @@ def memo_watch() -> int:
     voice.sh on が起動し、off が止める。キーが押されている間だけマイクを開く。
     宛先は、利用者が話す相手に選んでいるセッション。選んでいなければ、最後に話していたセッション。
     """
-    import sounddevice as sd
-
     single = open(MEMO_WATCH_LOCK, "a+", encoding="utf-8")
     try:
         fcntl.flock(single, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -601,6 +614,7 @@ def memo_watch() -> int:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     def target(lock) -> str | None:
+        """メモの宛先。停止中や、宛先のセッションがミュート中のときは None(マイクを開かない)。"""
         try:
             with open(SESSIONS_PATH, encoding="utf-8") as f:
                 rec = json.load(f)
@@ -609,10 +623,10 @@ def memo_watch() -> int:
         sessions = rec.get("sessions") if isinstance(rec.get("sessions"), dict) else {}
         if rec.get("boot") != boot_id() or rec.get("paused"):
             return None
-        if rec.get("focus") in sessions:
-            return rec["focus"]
-        holder = read_floor(lock)[0]
-        return holder if holder in sessions else None
+        name = rec.get("focus") if rec.get("focus") in sessions else read_floor(lock)[0]
+        if name not in sessions or sessions[name].get("state") == "muted":
+            return None
+        return name
 
     def held_for(seconds: float) -> bool:
         start = time.time()
@@ -622,53 +636,58 @@ def memo_watch() -> int:
             time.sleep(0.03)
         return True
 
+    def wait_release() -> None:
+        while key_down():
+            time.sleep(0.1)
+
     while True:
         time.sleep(0.05)
-        if not key_down():
-            continue
         lock = None
         try:
-            if not held_for(MEMO_MIN_HOLD_S):
+            if not key_down() or not held_for(MEMO_MIN_HOLD_S):
                 continue
             lock = open(LOCK_PATH, "a+", encoding="utf-8")
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
-                # どこかのセッションが話しているか、聞いている。そちらが受け取る
-                while key_down():
-                    time.sleep(0.1)
+                wait_release()  # どこかのセッションが話しているか、聞いている。そちらが受け取る
                 continue
             name = target(lock)
             if not name:
-                while key_down():
-                    time.sleep(0.1)
+                wait_release()
                 continue
             # マイクを開く。Bluetooth は開いた直後の音を拾えないので、合図を鳴らしてから話してもらう
-            q: queue.Queue = queue.Queue()
-            pcm = b""
-            cued = False
-            with sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1,
-                                   callback=lambda indata, *_: q.put(bytes(indata))):
-                released = 0.0
-                received = 0
-                while released < RELEASE_GRACE_S and len(pcm) < 120 * RATE * 2:
-                    try:
-                        chunk = q.get(timeout=0.2)
-                    except queue.Empty:
-                        chunk = b""
-                    received += len(chunk)
-                    if not cued and received >= WARMUP_S * RATE * 2:
-                        cued = True
-                        play(CUE_START)
-                    elif cued:
-                        pcm += chunk
-                    released = released + len(chunk) / (RATE * 2) if not key_down() else 0.0
-                    if not chunk and not key_down():
-                        released += 0.2
+            stop = threading.Event()
+            ready = threading.Event()
+
+            def on_ready() -> None:
+                ready.set()
+                play(CUE_START)
+
+            frames: list[bytes] = []
+            released = 0.0
+            for frame in mic_frames(stop, on_ready):
+                if ready.is_set():
+                    frames.append(frame)
+                released = 0.0 if key_down() else released + FRAME_S
+                if released >= RELEASE_GRACE_S or len(frames) * FRAME_S >= 120:
+                    stop.set()
+            if not ready.is_set():
+                continue  # 合図の前に離した(ショートカットなど)。何も鳴らさない
+            pcm = b"".join(frames)
             text = ""
             if len(pcm) >= int(0.5 * RATE * 2):
-                with httpx.Client(timeout=120) as client:
-                    text = transcribe(client, pcm)
+                try:
+                    with httpx.Client(timeout=120) as client:
+                        text = transcribe(client, pcm)
+                except Exception as e:  # Whisper に届かない。預かれなかったことを音で知らせる
+                    print(f"メモの見張り: 文字にできませんでした({type(e).__name__}: {e})", file=sys.stderr)
+            if MUTE_PATTERN.match(text):
+                # 作業中でも、声でミュートにできる。以後、このセッションは話しかけず、見張りもマイクを開かない
+                session_set_state(name, "muted")
+                caption(name, "あなた", "(ミュート)")
+                play(CUE_END)
+                continue
             m = MEMO_PATTERN.match(text)
             if m and m.group(1).strip():
                 text = m.group(1)
@@ -696,6 +715,7 @@ def main() -> int:
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")
+    ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
     ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
     ap.add_argument("--memo-watch", action="store_true", help="Claude の作業中に、キーを押して話したメモを預かる見張りとして動く(voice.sh on が起動する)")
     ap.add_argument("--file", help="検証用。マイクの代わりに WAV ファイルを読む")
@@ -706,6 +726,10 @@ def main() -> int:
         return notify()
     if args.memo_watch:
         return memo_watch()
+    if args.unmute:
+        if sessions_update(args.name).get(args.name, {}).get("state") == "muted":
+            session_set_state(args.name, "working")
+        return 0
     if args.release or args.end:
         release_turn(args.name)
         if args.end:
@@ -750,10 +774,17 @@ def main() -> int:
                         # メモは返事と分けて預かる。キーの方式では、離すまでの続きもメモにする
                         body = memo.group(1) if memo else text
                         state["memo_hold"] = key_mode
+                        ended = pattern.search(body)
+                        if ended:
+                            body = body[: ended.start()]  # 「以上」はメモに入れない
                         if body.strip():
                             memo_add(args.name, body)
                             caption(args.name, "メモ", body)
                             state["memo_count"] += 1
+                        if ended and not key_mode:
+                            # 合言葉の方式では、メモのあとの「以上」でも話し終わりにする
+                            state["reason"] = "end-word"
+                            stop.set()
                         continue
                     m = pattern.search(text)
                     if m:
@@ -786,6 +817,10 @@ def main() -> int:
     lock = None
     say = args.say
     if not from_file:
+        if sessions_update(args.name).get(args.name, {}).get("state") == "muted":
+            # 利用者がミュートにしている(聞き取り中、または作業中に「ミュート」と言った)。話しかけない
+            print("[ミュート: 利用者がミュートにしています。読み上げていません。声で呼びかけず、画面に「再開するときは /10-voice と入力してください」と書いて待ってください。利用者が再開を頼んだら、voice.sh on を実行してから聞き取りを始めます]")
+            return 0
         lock, switched, waited = acquire_turn(args.name)
         if lock is None:
             print("[順番待ち: まだ話せません(ほかのセッションが会話中、利用者が別のセッションを話す相手に選んでいる、このセッションが「あとで」に置かれている、停止ボタンが押されている、のいずれか)。読み上げていません]")
@@ -980,7 +1015,8 @@ def main() -> int:
               else "[読み上げは、始めてすぐに止まりました。ほぼ伝わっていません]")
     if texts:
         print("\n".join(texts))
-    if not from_file:
+    if not from_file and reason != "interrupted":
+        # 中断されたときは、出力が読まれないので、預かったまま残す(次の聞き取りで渡す)
         for m in memo_take(args.name):
             print(f"[メモ: {m}]")
     if key_note:

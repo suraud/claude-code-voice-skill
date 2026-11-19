@@ -521,6 +521,10 @@ final class CaptionController: NSObject {
 
     /// タブを押した。そのセッションを話す相手にする(「すべて」なら、相手を選ばない状態に戻す)
     func select(_ name: String) {
+        if showingHelp {  // 使い方を出していたら、字幕に戻す
+            showingHelp = false
+            styleHelp()
+        }
         selected = name
         setFocus(name == allTab ? nil : name)
         styleChips()
@@ -640,7 +644,8 @@ final class CaptionController: NSObject {
         order = names
         selected = order.contains(focus) ? focus : allTab
         if !draggingChip && (sessionsChanged || orderChanged || first) { layoutBar() } else { styleChips() }
-        if newCaption || focusChanged || first { render() }
+        // 使い方を表示している間は、描き直さない(読んでいる位置が先頭に戻らないようにする)
+        if (newCaption || focusChanged || first) && !showingHelp { render() }
         if newCaption && !entries.isEmpty && (!panel.isVisible || first) { panel.orderFrontRegardless() }
         if first && !entries.isEmpty { panel.orderFrontRegardless() }
     }
