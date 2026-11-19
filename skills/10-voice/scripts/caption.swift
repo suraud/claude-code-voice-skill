@@ -17,6 +17,7 @@
 // - 右上の停止ボタンを押すと、すべてのセッションが話すのも聞くのもやめる(会議のときなど)。
 //   もう一度押すと再開する
 // - Claude Code を終了したセッションは、タブから消える
+// - 右上の「?」を押すと、使い方の一覧を表示する。もう一度押すと、字幕に戻る
 // - 右上の × で隠せる。隠しても、次の読み上げや発言でまた出る
 // - 表示と、置き場所の書き換えだけを行う。どこにも送信しない
 
@@ -34,6 +35,43 @@ let userName = "あなた"
 let pollSeconds: TimeInterval = 0.3
 let barHeight: CGFloat = 30
 let lanes: [(key: String, title: String)] = [("normal", "いま話す"), ("later", "あとで")]
+
+/// 「?」で表示する使い方。見出しと、操作・説明の組
+let helpSections: [(title: String, rows: [(String, String)])] = [
+    ("話す", [
+        ("右 ⌘ を押しながら話す", "離すと、発言が Claude に届く。考えて黙るときは、押したままにする"),
+        ("読み上げ中に右 ⌘ を押す", "読み上げが止まり、そのまま話せる"),
+        ("右 ⌘ +「ミュート」", "マイクを閉じる。再開は /10-voice"),
+    ]),
+    ("メモ(あとでやること)", [
+        ("右 ⌘ +「メモ、(内容)」", "預かって、会話は続く。返事は、キーを離してから、もう一度押して話す"),
+        ("Claude の作業中に右 ⌘", "合図が鳴ってから内容を話す。「メモ」と言わなくてよい"),
+        ("預かったメモ", "Claude が、そのセッションの TODO.md に書き足す"),
+    ]),
+    ("タブ", [
+        ("タブを押す", "そのセッションが話す相手になる。ほかのセッションは止まって待つ"),
+        ("「すべて」を押す", "相手を選ばない。「いま話す」のセッションが順番に話す"),
+        ("タブをつまんで移す", "「あとで」に置くと、戻すまで話しかけてこない"),
+        ("丸の色", "緑: 会話中　橙: 話したくて待っている　灰: 作業中など"),
+    ]),
+    ("窓", [
+        ("⏸ 停止 / ▶ 再開", "すべてのセッションが、話すのも聞くのもやめる(会議のとき)"),
+        ("×", "隠す。次の読み上げや発言でまた出る"),
+        ("帯をつかむ / 右下のつまみ", "動かす / 大きさを変える"),
+    ]),
+    ("合図の音", [
+        ("ピン", "読み上げが終わった。キーを押して話せる"),
+        ("グラス", "発言を受け付けた"),
+        ("ポン", "メモを預かった"),
+        ("低い音", "聞き取れなかった。もう一度、押して話す"),
+    ]),
+    ("始め方と終わり方", [
+        ("/10-voice", "音声で会話する(キーを押して話す)"),
+        ("/10-voice hands", "キーを使わない。「以上」と言って話し終える"),
+        ("/10-voice off", "サービスを止める(使わない日)"),
+        ("「終わり」と言う", "音声の会話を終える"),
+    ]),
+]
 
 struct Entry {
     let time: String
@@ -278,6 +316,8 @@ final class CaptionController: NSObject {
     var order: [String] = []       // タブに出すセッションの並び(現れた順)
     var paused = false
     let pauseButton = NSButton(frame: .zero)
+    let helpButton = NSButton(frame: .zero)
+    var showingHelp = false
     var draggingChip = false
 
     let claudeColor = NSColor(calibratedRed: 0.55, green: 0.80, blue: 1.00, alpha: 1)
@@ -353,6 +393,60 @@ final class CaptionController: NSObject {
         pauseButton.autoresizingMask = [.minXMargin]
         bar.addSubview(pauseButton)
         stylePause()
+
+        helpButton.frame = NSRect(x: bar.bounds.width - 132, y: 5, width: 22, height: 20)
+        helpButton.title = "?"
+        helpButton.isBordered = false
+        helpButton.wantsLayer = true
+        helpButton.layer?.cornerRadius = 10
+        helpButton.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+        helpButton.contentTintColor = .white
+        helpButton.target = self
+        helpButton.action = #selector(toggleHelp(_:))
+        helpButton.autoresizingMask = [.minXMargin]
+        helpButton.toolTip = "使い方を表示する。もう一度押すと、字幕に戻る"
+        bar.addSubview(helpButton)
+        styleHelp()
+    }
+
+    @objc func toggleHelp(_ sender: Any?) {
+        showingHelp.toggle()
+        styleHelp()
+        render()
+    }
+
+    func styleHelp() {
+        helpButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(showingHelp ? 0.40 : 0.14).cgColor
+    }
+
+    /// 使い方の一覧を表示する
+    func renderHelp() {
+        let out = NSMutableAttributedString()
+        let tabs = NSMutableParagraphStyle()
+        tabs.tabStops = [NSTextTab(textAlignment: .left, location: 230)]
+        tabs.headIndent = 230
+        tabs.paragraphSpacing = 3
+        for section in helpSections {
+            let head = NSMutableParagraphStyle()
+            head.paragraphSpacingBefore = 8
+            head.paragraphSpacing = 4
+            out.append(NSAttributedString(string: section.title + "\n", attributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .bold),
+                .foregroundColor: claudeColor, .paragraphStyle: head,
+            ]))
+            for (key, value) in section.rows {
+                out.append(NSAttributedString(string: key + "\t", attributes: [
+                    .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                    .foregroundColor: userColor, .paragraphStyle: tabs,
+                ]))
+                out.append(NSAttributedString(string: value + "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+                    .foregroundColor: NSColor.white.withAlphaComponent(0.9), .paragraphStyle: tabs,
+                ]))
+            }
+        }
+        textView.textStorage?.setAttributedString(out)
+        textView.scroll(NSPoint.zero)
     }
 
     @objc func togglePause(_ sender: Any?) {
@@ -461,6 +555,10 @@ final class CaptionController: NSObject {
     }
 
     func render() {
+        if showingHelp {
+            renderHelp()
+            return
+        }
         let shown = selected == allTab ? entries : entries.filter { $0.session == selected }
         let out = NSMutableAttributedString()
         for (i, e) in shown.enumerated() {
