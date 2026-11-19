@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | release | end | notify | captions on|off
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | notify | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -185,6 +185,11 @@ case "${1:-}" in
     # 一言のために長く待たない。ほかのセッションが話していて順番が来なければ、読み上げずに戻る
     exec "$PY" "$(dirname "$0")/listen.py" --no-reply --wait 20 --say "$1"
     ;;
+  review)
+    # 話し方の分析のために、1 日分の会話の文字から、利用者の発言と数の集計を取り出す(日付を省くと今日)。
+    shift
+    exec python3 "$(dirname "$0")/review.py" "$@"
+    ;;
   mic)
     # 聞き取りに使うマイクを選ぶ(全セッションで共通)。builtin: Mac 本体のマイク。default: 既定の入力(イヤホンなど)。
     case "${2:-}" in
@@ -224,7 +229,7 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "使い方: $0 on | off | status | listen [引数] | say '文' | yomi '表記' '読み' | mic builtin|default | release | end | notify | captions on|off" >&2
+    echo "使い方: $0 on | off | status | listen [引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | notify | captions on|off" >&2
     exit 2
     ;;
 esac
