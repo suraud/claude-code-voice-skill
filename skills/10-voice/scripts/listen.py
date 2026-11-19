@@ -508,7 +508,9 @@ def to_notation(text: str) -> str:
                                          re.IGNORECASE), word))
         _back.append(loose)
     for reading, word in _back[0]:
-        text = text.replace(reading, word)
+        if reading in text:
+            # カタカナの語の一部には当てはめない(「イント」を登録していても、「ポイント」は直さない)
+            text = re.sub(rf"(?<![ァ-ヶー]){re.escape(reading)}(?![ァ-ヶー])", lambda m: word, text)
     for pattern, word in _back[1]:
         text = pattern.sub(lambda m: word, text)
     return text
