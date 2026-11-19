@@ -464,6 +464,51 @@ def transcribe(client: httpx.Client, pcm: bytes) -> str:
     return " ".join(r.json().get("text", "").split())
 
 
+# 読みがな。字幕にはふつうの表記で出し、声では読みで読む。
+# 1) 文の中の {表記|読み} は、字幕に「表記」、声に「読み」を使う
+# 2) それ以外の英字の語は、読みがなの表(スクリプトと同じ場所の yomi.tsv、利用者の YOMI_USER_PATH)で読みに直す
+YOMI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yomi.tsv")
+YOMI_USER_PATH = os.path.expanduser("~/.voicemode/10-voice-yomi.tsv")
+RUBY = re.compile(r"\{([^|{}]+)\|([^|{}]+)\}")
+
+
+def load_yomi() -> list[tuple[str, str]]:
+    table: dict[str, tuple[str, str]] = {}
+    for path in (YOMI_PATH, YOMI_USER_PATH):  # あとから読むほう(利用者の表)が優先
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("#") or "\t" not in line:
+                        continue
+                    word, reading = (x.strip() for x in line.rstrip("\n").split("\t")[:2])
+                    if word and reading:
+                        table[word.lower()] = (word, reading)
+        except OSError:
+            pass
+    return sorted(table.values(), key=lambda x: -len(x[0]))  # 長い表記を先に当てはめる
+
+
+def split_say(text: str) -> tuple[str, str]:
+    """読み上げる文を、字幕に出す文と、声で読む文に分ける。"""
+    shown = RUBY.sub(lambda m: m.group(1), text)
+    parts = []  # {表記|読み} の読みは、表で置き換えない
+    pos = 0
+    table = load_yomi()
+
+    def by_table(chunk: str) -> str:
+        for word, reading in table:
+            # 英数字の語の一部(例: 「AIR」の中の「AI」)には当てはめない
+            chunk = re.sub(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])", reading, chunk, flags=re.IGNORECASE)
+        return chunk
+
+    for m in RUBY.finditer(text):
+        parts.append(by_table(text[pos : m.start()]))
+        parts.append(m.group(2))
+        pos = m.end()
+    parts.append(by_table(text[pos:]))
+    return shown, "".join(parts)
+
+
 def listen_mode() -> str:
     """字幕の窓で選ばれている、聞き取りの方式(key または word)。記録がなければ key。"""
     try:
@@ -1092,7 +1137,7 @@ def main() -> int:
 
     from_file = bool(args.file)
     lock = None
-    say = args.say
+    shown_say, say = split_say(args.say) if args.say else (None, None)
     if not from_file:
         if sessions_update(args.name).get(args.name, {}).get("state") == "muted":
             # 利用者がミュートにしている(聞き取り中、または作業中に「ミュート」と言った)。話しかけない
@@ -1104,9 +1149,10 @@ def main() -> int:
             return 0
         if args.wait <= LOCK_WAIT_S:  # 長く待つ指定(バックグラウンド)のときは、コマンドの制限時間を気にしない
             args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
+        spoken = say
         if switched and say:
             say = f"{args.name}、からです。{say}"  # 別のセッションから切り替わったときは名乗る
-    lead = len(say) - len(args.say) if say and args.say else 0  # 名乗りを足した分
+    lead = len(say) - len(spoken) if say and not from_file else 0  # 名乗りを足した分
     speaker = Speaker(say, args.name, stop_on_key=key_mode, lead=lead) if say and not from_file else None
 
     mode_box = {"key": key_mode}   # 音声の取り込み(下の frames)に、いまの方式を伝える
@@ -1115,7 +1161,7 @@ def main() -> int:
     def start_speaker() -> None:
         if speaker and not started["speaker"]:
             started["speaker"] = True
-            caption(args.name, "Claude", args.say)
+            caption(args.name, "Claude", shown_say)  # 字幕には、ふつうの表記で出す
             speaker.start()
 
     def on_ready() -> None:
