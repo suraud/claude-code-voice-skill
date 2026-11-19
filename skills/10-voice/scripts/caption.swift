@@ -20,6 +20,7 @@
 // - 窓の左下に、読み上げの再生位置のつまみがある。読み上げ中は進み、動かすと、その位置から読み直す。
 //   読み終えたあとも、そのセッションが返事を待っている間は使える。
 //   読み上げ中の発言は、読み終えた部分を明るく、これから読む部分を薄く表示する。つまみを動かすと、境目も動く
+// - 右上の「◐」を押すと、窓の色を、暗い色と明るい色で切り替える(選んだ色は覚えておく)
 // - 右上の「?」を押すと、使い方の一覧を表示する。もう一度押すと、字幕に戻る
 // - 右上の × で隠せる。隠しても、次の読み上げや発言でまた出る
 // - 表示と、置き場所の書き換えだけを行う。どこにも送信しない
@@ -63,6 +64,7 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("丸の色", "緑: 会話中　橙: 話したくて待っている　灰: 作業中、または声では待っていない(画面を見る)"),
     ]),
     ("窓", [
+        ("◐", "窓の色を、暗い色と明るい色で切り替える"),
         ("読み上げの位置のつまみ(左下)", "読み上げ中は進む。動かすと、その位置から読み直す。返事を待っている間だけ使える。字幕は、読み終えた部分が明るくなる"),
         ("1x / 1.25x", "読み上げの速さを切り替える。途中で押すと、少し戻って、新しい速さで読む"),
         ("⏸ 停止 / ▶ 再開", "すべてのセッションが、話すのも聞くのもやめる(会議のとき)"),
@@ -82,6 +84,36 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("「終わり」と言う", "音声の会話を終える"),
     ]),
 ]
+
+/// 窓の色。裏の画面に合わせて、暗い色と明るい色を切り替える
+struct Theme {
+    let name: String
+    let background: NSColor   // 窓の地の色
+    let fg: NSColor           // 文字と、帯やボタンの重ね色のもと
+    let claude: NSColor       // Claude の発言の色
+    let user: NSColor         // 利用者の発言の色
+    let talking: NSColor      // タブの丸: 会話中
+    let waiting: NSColor      // タブの丸: 順番待ち
+}
+
+let themes: [Theme] = [
+    Theme(name: "dark",
+          background: NSColor(calibratedWhite: 0.07, alpha: 0.88),
+          fg: NSColor(calibratedWhite: 1.0, alpha: 1),
+          claude: NSColor(calibratedRed: 0.55, green: 0.80, blue: 1.00, alpha: 1),
+          user: NSColor(calibratedRed: 1.00, green: 0.84, blue: 0.45, alpha: 1),
+          talking: NSColor(calibratedRed: 0.45, green: 0.90, blue: 0.55, alpha: 1),
+          waiting: NSColor(calibratedRed: 1.00, green: 0.62, blue: 0.25, alpha: 1)),
+    Theme(name: "light",
+          background: NSColor(calibratedWhite: 0.97, alpha: 0.94),
+          fg: NSColor(calibratedWhite: 0.08, alpha: 1),
+          claude: NSColor(calibratedRed: 0.04, green: 0.33, blue: 0.72, alpha: 1),
+          user: NSColor(calibratedRed: 0.58, green: 0.34, blue: 0.00, alpha: 1),
+          talking: NSColor(calibratedRed: 0.10, green: 0.62, blue: 0.25, alpha: 1),
+          waiting: NSColor(calibratedRed: 0.90, green: 0.45, blue: 0.05, alpha: 1)),
+]
+// 選んだ色は、この Mac に覚えておく(次に窓を出したときも同じ色にする)
+var theme = themes.first { $0.name == UserDefaults.standard.string(forKey: "10-voice-caption-theme") } ?? themes[0]
 
 struct Entry {
     let time: String
@@ -212,19 +244,19 @@ final class DragBar: NSView {
     override func draw(_ dirtyRect: NSRect) {
         // 停止中は、帯を赤みがかった色にして、止まっていることが分かるようにする
         (paused ? NSColor(calibratedRed: 0.75, green: 0.20, blue: 0.20, alpha: 0.55)
-                : NSColor.white.withAlphaComponent(0.10)).setFill()
+                : theme.fg.withAlphaComponent(0.10)).setFill()
         bounds.fill()
         for (i, z) in zones.enumerated() {
             let on = highlighted == i
             let path = NSBezierPath(roundedRect: z.rect, xRadius: 7, yRadius: 7)
-            NSColor.white.withAlphaComponent(on ? 0.28 : 0.07).setFill()
+            theme.fg.withAlphaComponent(on ? 0.28 : 0.07).setFill()
             path.fill()
-            NSColor.white.withAlphaComponent(on ? 0.9 : 0.22).setStroke()
+            theme.fg.withAlphaComponent(on ? 0.9 : 0.22).setStroke()
             path.lineWidth = 1
             path.stroke()
             (z.title as NSString).draw(at: NSPoint(x: z.rect.minX + 7, y: z.rect.minY + 5), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-                .foregroundColor: NSColor.white.withAlphaComponent(0.6),
+                .foregroundColor: theme.fg.withAlphaComponent(0.6),
             ])
         }
     }
@@ -257,15 +289,15 @@ final class TabChip: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-        NSColor.white.withAlphaComponent(selected ? 0.30 : (dragging ? 0.22 : 0.12)).setFill()
+        theme.fg.withAlphaComponent(selected ? 0.30 : (dragging ? 0.22 : 0.12)).setFill()
         path.fill()
         var x: CGFloat = 8
         if draggable {
             let dot: NSColor
             switch state {
-            case "talking": dot = NSColor(calibratedRed: 0.45, green: 0.90, blue: 0.55, alpha: 1)
-            case "waiting": dot = NSColor(calibratedRed: 1.00, green: 0.62, blue: 0.25, alpha: 1)
-            default: dot = NSColor.white.withAlphaComponent(0.25)
+            case "talking": dot = theme.talking
+            case "waiting": dot = theme.waiting
+            default: dot = theme.fg.withAlphaComponent(0.25)
             }
             dot.setFill()
             NSBezierPath(ovalIn: NSRect(x: 7, y: 6.5, width: 7, height: 7)).fill()
@@ -273,7 +305,7 @@ final class TabChip: NSView {
         }
         (name as NSString).draw(at: NSPoint(x: x, y: 2.5), withAttributes: [
             .font: TabChip.font,
-            .foregroundColor: selected ? NSColor.white : NSColor.white.withAlphaComponent(0.72),
+            .foregroundColor: selected ? theme.fg : theme.fg.withAlphaComponent(0.72),
         ])
     }
 
@@ -319,7 +351,7 @@ final class ResizeGrip: NSView {
     }
     override func mouseUp(with event: NSEvent) { window?.saveFrame(usingName: "10-voice-caption") }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.white.withAlphaComponent(0.45).setStroke()
+        theme.fg.withAlphaComponent(0.45).setStroke()
         for offset in [4.0, 8.0, 12.0] {  // 斜めの 3 本線
             let path = NSBezierPath()
             path.move(to: NSPoint(x: bounds.maxX - 2, y: offset))
@@ -363,8 +395,10 @@ final class CaptionController: NSObject {
     var showingHelp = false
     var draggingChip = false
 
-    let claudeColor = NSColor(calibratedRed: 0.55, green: 0.80, blue: 1.00, alpha: 1)
-    let userColor = NSColor(calibratedRed: 1.00, green: 0.84, blue: 0.45, alpha: 1)
+    var claudeColor: NSColor { theme.claude }
+    var userColor: NSColor { theme.user }
+    let themeButton = NSButton(frame: .zero)
+    let closeButton = NSButton(frame: .zero)
 
     override init() {
         let screen = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
@@ -376,7 +410,7 @@ final class CaptionController: NSObject {
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isOpaque = false
-        panel.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: 0.88)
+        panel.backgroundColor = theme.background
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.minSize = NSSize(width: 420, height: 100)
@@ -415,11 +449,12 @@ final class CaptionController: NSObject {
 
         super.init()
 
-        let close = NSButton(frame: NSRect(x: bar.bounds.width - 28, y: 5, width: 20, height: 20))
+        let close = closeButton
+        close.frame = NSRect(x: bar.bounds.width - 28, y: 5, width: 20, height: 20)
         close.title = "×"
         close.isBordered = false
         close.font = NSFont.systemFont(ofSize: 15, weight: .medium)
-        close.contentTintColor = NSColor.white.withAlphaComponent(0.8)
+        close.contentTintColor = theme.fg.withAlphaComponent(0.8)
         close.target = self
         close.action = #selector(hide(_:))
         close.autoresizingMask = [.minXMargin]
@@ -443,7 +478,6 @@ final class CaptionController: NSObject {
         helpButton.wantsLayer = true
         helpButton.layer?.cornerRadius = 10
         helpButton.font = NSFont.systemFont(ofSize: 13, weight: .bold)
-        helpButton.contentTintColor = .white
         helpButton.target = self
         helpButton.action = #selector(toggleHelp(_:))
         helpButton.autoresizingMask = [.minXMargin]
@@ -455,9 +489,8 @@ final class CaptionController: NSObject {
         speedButton.isBordered = false
         speedButton.wantsLayer = true
         speedButton.layer?.cornerRadius = 6
-        speedButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        speedButton.layer?.backgroundColor = theme.fg.withAlphaComponent(0.14).cgColor
         speedButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        speedButton.contentTintColor = .white
         speedButton.target = self
         speedButton.action = #selector(cycleSpeed(_:))
         speedButton.autoresizingMask = [.minXMargin]
@@ -480,10 +513,47 @@ final class CaptionController: NSObject {
         content.addSubview(seekSlider)
         seekLabel.frame = NSRect(x: 258, y: 3, width: 82, height: seekHeight - 6)
         seekLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        seekLabel.textColor = NSColor.white.withAlphaComponent(0.6)
+        seekLabel.textColor = theme.fg.withAlphaComponent(0.6)
         seekLabel.alignment = .left
         seekLabel.autoresizingMask = [.maxXMargin, .maxYMargin]
         content.addSubview(seekLabel)
+
+        themeButton.frame = NSRect(x: bar.bounds.width - 220, y: 5, width: 24, height: 20)
+        themeButton.title = "◐"
+        themeButton.isBordered = false
+        themeButton.wantsLayer = true
+        themeButton.layer?.cornerRadius = 6
+        themeButton.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        themeButton.target = self
+        themeButton.action = #selector(toggleTheme(_:))
+        themeButton.autoresizingMask = [.minXMargin]
+        themeButton.toolTip = "押すと、窓の色を切り替える(暗い色 / 明るい色)。裏の画面で見やすいほうを選ぶ"
+        bar.addSubview(themeButton)
+        applyTheme()
+    }
+
+    @objc func toggleTheme(_ sender: Any?) {
+        theme = themes[((themes.firstIndex { $0.name == theme.name } ?? 0) + 1) % themes.count]
+        UserDefaults.standard.set(theme.name, forKey: "10-voice-caption-theme")
+        applyTheme()
+        layoutBar()
+        render()
+    }
+
+    /// いまの色を、窓とボタンに反映する
+    func applyTheme() {
+        panel.backgroundColor = theme.background
+        closeButton.contentTintColor = theme.fg.withAlphaComponent(0.8)
+        for b in [helpButton, speedButton, themeButton] {
+            b.contentTintColor = theme.fg
+        }
+        themeButton.layer?.backgroundColor = theme.fg.withAlphaComponent(0.14).cgColor
+        seekLabel.textColor = theme.fg.withAlphaComponent(0.6)
+        stylePause()
+        styleHelp()
+        styleSpeed()
+        bar.needsDisplay = true
+        panel.contentView?.needsDisplay = true
     }
 
     @objc func seekChanged(_ sender: Any?) {
@@ -563,9 +633,9 @@ final class CaptionController: NSObject {
         guard let storage = textView.textStorage, range.location + range.length <= storage.length else { return }
         let read = String(text.prefix(mark)).utf16.count
         storage.beginEditing()
-        storage.addAttribute(.foregroundColor, value: NSColor.white,
+        storage.addAttribute(.foregroundColor, value: theme.fg,
                              range: NSRange(location: range.location, length: read))
-        storage.addAttribute(.foregroundColor, value: NSColor.white.withAlphaComponent(0.38),
+        storage.addAttribute(.foregroundColor, value: theme.fg.withAlphaComponent(0.38),
                              range: NSRange(location: range.location + read, length: range.length - read))
         storage.endEditing()
     }
@@ -579,7 +649,7 @@ final class CaptionController: NSObject {
 
     func styleSpeed() {
         speedButton.title = String(format: "%gx", speed)
-        speedButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(speed > 1.01 ? 0.35 : 0.14).cgColor
+        speedButton.layer?.backgroundColor = theme.fg.withAlphaComponent(speed > 1.01 ? 0.35 : 0.14).cgColor
     }
 
     @objc func toggleHelp(_ sender: Any?) {
@@ -589,7 +659,7 @@ final class CaptionController: NSObject {
     }
 
     func styleHelp() {
-        helpButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(showingHelp ? 0.40 : 0.14).cgColor
+        helpButton.layer?.backgroundColor = theme.fg.withAlphaComponent(showingHelp ? 0.40 : 0.14).cgColor
     }
 
     /// 使い方の一覧を表示する
@@ -614,7 +684,7 @@ final class CaptionController: NSObject {
                 ]))
                 out.append(NSAttributedString(string: value + "\n", attributes: [
                     .font: NSFont.systemFont(ofSize: 13, weight: .regular),
-                    .foregroundColor: NSColor.white.withAlphaComponent(0.9), .paragraphStyle: tabs,
+                    .foregroundColor: theme.fg.withAlphaComponent(0.9), .paragraphStyle: tabs,
                 ]))
             }
         }
@@ -630,8 +700,8 @@ final class CaptionController: NSObject {
 
     func stylePause() {
         pauseButton.title = paused ? "▶ 再開" : "⏸ 停止"
-        pauseButton.contentTintColor = .white
-        pauseButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(paused ? 0.35 : 0.14).cgColor
+        pauseButton.contentTintColor = theme.fg
+        pauseButton.layer?.backgroundColor = theme.fg.withAlphaComponent(paused ? 0.35 : 0.14).cgColor
         pauseButton.toolTip = paused
             ? "押すと、音声の会話を再開する"
             : "押すと、すべてのセッションが話すのも聞くのもやめる(会議のときなど)"
@@ -747,7 +817,7 @@ final class CaptionController: NSObject {
             let isLatest = i == shown.count - 1
             let dim: CGFloat = isLatest ? 1.0 : 0.62          // 古い発言は薄くする
             let accent = (isUser ? userColor : claudeColor).withAlphaComponent(dim)
-            let body = (isUser ? userColor.blended(withFraction: 0.55, of: .white)! : NSColor.white)
+            let body = (isUser ? userColor.blended(withFraction: theme.name == "dark" ? 0.55 : 0.25, of: theme.fg)! : theme.fg)
                 .withAlphaComponent(dim)
             var head = "▍" + e.who
             if selected == allTab { head += "  [\(e.session)]" }
