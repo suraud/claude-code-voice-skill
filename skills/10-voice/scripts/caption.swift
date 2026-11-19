@@ -3,12 +3,14 @@
 // 使い方: caption <字幕のフォルダ> <セッションの記録>
 // - 字幕のフォルダには日付ごとのファイル(YYYY-MM-DD.txt)が入り、いちばん新しい日のものを表示する。
 //   1 行 1 発言で、「時刻<TAB>セッション名<TAB>話し手<TAB>本文」の形(listen.py が書く)
-// - セッションの記録は JSON で、セッションごとの置き場所(優先 / 通常 / 後回し)と状態が入る
+// - セッションの記録は JSON で、セッションごとの置き場所(いま話す / あとで)と状態、話す相手が入る
 //
 // 見え方と操作:
 // - どのアプリの上にも浮かび、デスクトップを切り替えてもついてくる
-// - 上の帯に「優先」「通常」「後回し」の区画があり、セッションのタブが入る。
-//   タブを押すと、そのセッションの会話に切り替わる。つまんで別の区画へ落とすと、置き場所が変わる
+// - 上の帯に「いま話す」「あとで」の区画があり、セッションのタブが入る。
+//   タブを押すと、そのセッションが話す相手になる。字幕もそのセッションのものに切り替わり、
+//   ほかのセッションは、話すのも聞くのもやめて待つ。「すべて」を押すと、相手を選ばない状態に戻り、
+//   「いま話す」のセッションが順番に話す。つまんで別の区画へ落とすと、置き場所が変わる
 // - タブの丸印は状態を表す。緑: 話している、聞いている。橙: 話したくて待っている
 // - Claude の発言は青、利用者の発言は黄で色分けする。古い発言は薄く表示する
 // - 帯の空いているところをつかむと動かせる。右下のつまみを引くと大きさを変えられる
@@ -30,7 +32,7 @@ let allTab = "すべて"
 let userName = "あなた"
 let pollSeconds: TimeInterval = 0.3
 let barHeight: CGFloat = 30
-let lanes: [(key: String, title: String)] = [("priority", "優先"), ("normal", "通常"), ("later", "後回し")]
+let lanes: [(key: String, title: String)] = [("normal", "いま話す"), ("later", "あとで")]
 
 struct Entry {
     let time: String
@@ -70,6 +72,22 @@ func updateRecord(_ change: (inout [String: Any]) -> Void) {
 
 func setPaused(_ paused: Bool) {
     updateRecord { $0["paused"] = paused }
+}
+
+/// 話す相手を書く。nil は、相手を選ばない(「すべて」)
+func setFocus(_ name: String?) {
+    updateRecord { root in
+        if let name = name { root["focus"] = name } else { root.removeValue(forKey: "focus") }
+    }
+}
+
+/// 話す相手を読む。選んでいない、または、そのセッションが会話を終えていれば nil
+func loadFocus() -> String? {
+    guard let data = FileManager.default.contents(atPath: sessionsPath),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let focus = root["focus"] as? String,
+          let sessions = root["sessions"] as? [String: Any], sessions[focus] != nil else { return nil }
+    return focus
 }
 
 /// セッションの記録を読む。読めなければ空を返す
@@ -143,7 +161,9 @@ final class TabChip: NSView {
         self.draggable = draggable
         let w = (name as NSString).size(withAttributes: [.font: TabChip.font]).width
         super.init(frame: NSRect(x: 0, y: 0, width: ceil(w) + (draggable ? 28 : 16), height: 20))
-        toolTip = draggable ? "押すと会話を切り替える。つまんで、優先・通常・後回しへ落とすと移る" : nil
+        toolTip = draggable
+            ? "押すと、このセッションが話す相手になる(ほかのセッションは待つ)。つまんで、いま話す・あとで へ落とすと移る"
+            : "押すと、相手を選ばない状態に戻る(いま話す のセッションが順番に話す)"
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -340,7 +360,7 @@ final class CaptionController: NSObject {
 
     func lane(of name: String) -> String { sessions[name]?.lane ?? "normal" }
 
-    /// 帯に、「すべて」のタブと、3 つの区画、その中のセッションのタブを並べる
+    /// 帯に、「すべて」のタブと、2 つの区画、その中のセッションのタブを並べる
     func layoutBar() {
         chips.forEach { $0.removeFromSuperview() }
         chips = []
@@ -383,8 +403,10 @@ final class CaptionController: NSObject {
         for c in chips { c.selected = c.name == selected }
     }
 
+    /// タブを押した。そのセッションを話す相手にする(「すべて」なら、相手を選ばない状態に戻す)
     func select(_ name: String) {
         selected = name
+        setFocus(name == allTab ? nil : name)
         styleChips()
         render()
     }
@@ -406,6 +428,12 @@ final class CaptionController: NSObject {
         if let i = zoneIndex(at: chip.frame.midX), lanes[i].key != lane(of: chip.name) {
             setLane(chip.name, lanes[i].key)
             sessions = loadSessions()
+            // 話す相手に選んでいるセッションを「あとで」へ移したら、相手を選ばない状態に戻す
+            if lanes[i].key == "later" && selected == chip.name {
+                selected = allTab
+                setFocus(nil)
+                render()
+            }
         }
         layoutBar()
     }
@@ -468,7 +496,10 @@ final class CaptionController: NSObject {
         let newCaption = readCaptions()
         let newSessions = loadSessions()
         let sessionsChanged = newSessions != sessions
-        if !newCaption && !sessionsChanged && !first { return }
+        // 選んでいるタブは、記録にある「話す相手」に合わせる(窓を出し直しても引き継ぐ)
+        let focus = loadFocus() ?? allTab
+        let focusChanged = focus != selected
+        if !newCaption && !sessionsChanged && !focusChanged && !first { return }
         sessions = newSessions
 
         let nowPaused = loadPaused()
@@ -483,12 +514,9 @@ final class CaptionController: NSObject {
         for n in sessions.keys.sorted() where !names.contains(n) { names.append(n) }
         let orderChanged = names != order
         order = names
-        if selected != allTab && !order.contains(selected) { selected = allTab }
-
-        // 新しい発言が来たら、そのセッションのタブへ切り替える(「すべて」を見ているときは動かさない)
-        if newCaption && !first, let last = entries.last, selected != allTab { selected = last.session }
+        selected = order.contains(focus) ? focus : allTab
         if !draggingChip && (sessionsChanged || orderChanged || first) { layoutBar() } else { styleChips() }
-        if newCaption || first { render() }
+        if newCaption || focusChanged || first { render() }
         if newCaption && !entries.isEmpty && (!panel.isVisible || first) { panel.orderFrontRegardless() }
         if first && !entries.isEmpty { panel.orderFrontRegardless() }
     }

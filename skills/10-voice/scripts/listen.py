@@ -109,12 +109,15 @@ def end_pattern(word: str) -> re.Pattern:
     )
 
 
-# セッションの置き場所(優先 / 通常 / 後回し)と状態。字幕の窓(caption.swift)が表示し、
-# 利用者がタブをつまんで置き場所を変える。Mac を起動し直すと、最初からになる
+# セッションの置き場所(いま話す / あとで)、話す相手、状態。字幕の窓(caption.swift)が表示し、
+# 利用者がタブをつまんで置き場所を変え、タブを押して話す相手を選ぶ。Mac を起動し直すと、最初からになる。
+# 置き場所の値は normal(いま話す)と later(あとで)。以前の priority は normal として扱う
 SESSIONS_PATH = os.path.expanduser("~/.voicemode/10-voice-sessions.json")
-LANES = ("priority", "normal", "later")
+LANES = ("normal", "later")
 _boot: list[str] = []
-_flags = {"paused": False}  # 字幕の窓の停止ボタンが押されているか(sessions_update が更新する)
+# paused: 字幕の窓の停止ボタンが押されているか。focus: 利用者が話す相手に選んだセッション(選んでいなければ None)。
+# どちらも sessions_update が更新する
+_flags: dict = {"paused": False, "focus": None}
 
 
 def boot_id() -> str:
@@ -153,6 +156,8 @@ def sessions_update(name: str, state: str | None = None) -> dict:
                 f.truncate()
                 f.write(json.dumps(data, ensure_ascii=False))
             _flags["paused"] = bool(data.get("paused"))
+            focus = data.get("focus")
+            _flags["focus"] = focus if focus in data["sessions"] else None  # 会話を終えたセッションは相手にしない
             return data["sessions"]
     except OSError:
         return {name: {"lane": "normal"}}
@@ -165,6 +170,8 @@ def session_end(name: str) -> None:
             fcntl.flock(f, fcntl.LOCK_EX)
             data = json.loads(f.read() or "{}")
             if isinstance(data.get("sessions"), dict) and data["sessions"].pop(name, None) is not None:
+                if data.get("focus") == name:
+                    data.pop("focus")
                 f.seek(0)
                 f.truncate()
                 f.write(json.dumps(data, ensure_ascii=False))
@@ -173,19 +180,17 @@ def session_end(name: str) -> None:
 
 
 def may_speak(sessions: dict, name: str) -> bool:
-    """置き場所の決まりで、いま話しかけてよいか。
+    """置き場所と、話す相手の決まりで、いま話しかけてよいか。
 
     停止ボタンが押されている間は、どのセッションも話しかけない。
-    優先: いつでも。通常: 優先にほかのセッションがいないとき。後回し: 話しかけない。
+    利用者が話す相手を選んでいる間は、そのセッションだけが話す。
+    選んでいなければ、「いま話す」のセッションが順番に話し、「あとで」のセッションは話しかけない。
     """
     if _flags["paused"]:
         return False
-    lane = sessions.get(name, {}).get("lane", "normal")
-    if lane == "later":
-        return False
-    if lane == "normal":
-        return not any(v.get("lane") == "priority" for k, v in sessions.items() if k != name)
-    return True
+    if _flags["focus"]:
+        return _flags["focus"] == name
+    return sessions.get(name, {}).get("lane", "normal") != "later"
 
 
 def read_floor(f) -> tuple[str, float, bool]:
@@ -442,7 +447,8 @@ def notify() -> int:
     """Claude Code の hook から呼ばれる。実行の確認が画面に出たことを、声で知らせる。
 
     標準入力の JSON から作業フォルダを読む。そのセッションが音声で会話中のときだけ話す。
-    停止ボタンが押されている、後回しに置かれている、ミュート中のときは、黙っている。
+    停止ボタンが押されている、「あとで」に置かれている、ミュート中のときは、黙っている。
+    利用者が別のセッションを話す相手に選んでいる間は、選び直されるまで待つ。
     待機中のセッションが話しかけるときと同じ順番待ちをする。ほかのセッションの読み上げと、
     それに続く利用者の発言が終わってから話す。マイクは開かず、利用者の番にも触れない。
     """
@@ -462,9 +468,19 @@ def notify() -> int:
         me = rec.get("sessions", {}).get(name) if isinstance(rec.get("sessions"), dict) else None
         if rec.get("boot") != boot_id() or rec.get("paused") or not me:
             return None
-        if me.get("lane") == "later" or me.get("state") == "muted":
+        if me.get("state") == "muted" or (me.get("lane") == "later" and rec.get("focus") != name):
             return None
         return me.get("state"), me.get("t")
+
+    def focus_of():
+        """利用者が話す相手に選んでいるセッション。選んでいなければ None。"""
+        try:
+            with open(SESSIONS_PATH, encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            return None
+        focus = rec.get("focus")
+        return focus if isinstance(rec.get("sessions"), dict) and focus in rec["sessions"] else None
 
     before = current()
     if before is None:
@@ -480,7 +496,8 @@ def notify() -> int:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             holder, last, active = read_floor(lock)
-            if not (holder and holder != name and active and time.time() - last < FLOOR_HOLD_S):
+            others_turn = holder and holder != name and active and time.time() - last < FLOOR_HOLD_S
+            if not others_turn and focus_of() in (None, name):
                 break  # 順番が空いた。話している間は持ち続け、ほかのセッションを待たせる
             fcntl.flock(lock, fcntl.LOCK_UN)
         except OSError:
@@ -589,7 +606,7 @@ def main() -> int:
     if not from_file:
         lock, switched, waited = acquire_turn(args.name)
         if lock is None:
-            print("[順番待ち: まだ話せません(ほかのセッションが会話中、または、このセッションより優先のセッションがある、後回しに置かれている)。読み上げていません]")
+            print("[順番待ち: まだ話せません(ほかのセッションが会話中、利用者が別のセッションを話す相手に選んでいる、このセッションが「あとで」に置かれている、停止ボタンが押されている、のいずれか)。読み上げていません]")
             return 0
         args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
         if switched and say:
@@ -716,6 +733,10 @@ def main() -> int:
             if _flags["paused"]:
                 state["reason"] = state["reason"] or "paused"
                 break
+            if _flags["focus"] and _flags["focus"] != args.name and not talking:
+                # 利用者が、別のセッションを話す相手に選んだ。読み上げも聞き取りもやめて、順番をゆずる
+                state["reason"] = state["reason"] or "yield"
+                break
         if since_voice >= args.idle and not in_speech and not talking:
             jobs.join()
             state["reason"] = state["reason"] or "idle"
@@ -725,6 +746,7 @@ def main() -> int:
             break
 
     stop.set()
+    cut_short = bool(speaker) and speaking and not barged  # 読み上げの途中で、停止や保留になった
     if speaker:
         speaker.cancel.set()
     if in_speech and not state["reason"]:
@@ -763,6 +785,10 @@ def main() -> int:
             print(f"[割り込み: 読み上げを途中で止めました。伝わったのは、およそ次の部分までです:「{heard}」]")
         else:
             print("[割り込み: 読み上げを始めてすぐに止めました。ほぼ伝わっていません]")
+    if cut_short and reason in ("yield", "paused"):
+        heard = speaker.heard_text() if speaker else ""
+        print(f"[読み上げは途中で止まりました。伝わったのは、およそ次の部分までです:「{heard}」]" if heard
+              else "[読み上げは、始めてすぐに止まりました。ほぼ伝わっていません]")
     if texts:
         print("\n".join(texts))
     if key_note:
@@ -774,6 +800,7 @@ def main() -> int:
         "max": f"[打ち切り: 制限時間({args.max:g} 秒)に達しました。{'発言の途中かもしれません' if key_mode else waiting_for}]",
         "mute": "[ミュート: 利用者が「ミュート」と言いました。マイクを閉じました]",
         "paused": "[一時停止: 利用者が字幕の窓の停止ボタンを押しました。マイクを閉じました。再開ボタンが押されるまで、どのセッションも話しません]",
+        "yield": f"[保留: 利用者が字幕の窓で、別のセッション({_flags['focus']})を話す相手に選びました。読み上げと聞き取りをやめました。利用者が選び直すまで、このセッションは話せません]",
         "interrupted": "[中断されました]",
         "eof": f"[音声ファイルの終わりに達しました。「{args.end_word}」は聞こえていません]",
     }
