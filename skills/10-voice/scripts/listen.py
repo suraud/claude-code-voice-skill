@@ -64,6 +64,9 @@ BARGE_VOICED_S = 0.45  # 読み上げ中に声がこの長さ続いたら、割�
 TALK_KEY = 54
 TALK_KEY_FLAG = 0x10      # 修飾キーの状態に含まれる、右コマンドのビット
 RELEASE_GRACE_S = 0.5     # キーを離してから、この秒数のうちに押し直せば、続きとして扱う
+KEY_MIN_VOICED_S = 0.09   # キーを押して話した区切りは、声がこの長さあれば文字にする(「はい」のような短い返事を捨てない)
+KEY_MIN_HOLD_S = 0.6      # これより短く押しただけなら、ショートカットとみなして、何も鳴らさない
+CUE_MISS = "/System/Library/Sounds/Funk.aiff"  # キーを押して話したのに、聞き取れなかったときの合図
 
 # Bluetooth のイヤホンは、マイクを開いた直後に通話用の接続へ切り替わり、
 # その間の約 1 秒は音が出ない。音声が届き始めてからこの秒数を待って音を出す
@@ -535,12 +538,14 @@ def main() -> int:
     barged = False
     talking = False   # キーの方式で、キーが押されている(離した直後の猶予を含む)
     release_run = 0   # キーを離してからのフレーム数
+    hold_frames = 0   # キーを押し続けているフレーム数
     down = False
 
     def cut() -> None:
         nonlocal segment, in_speech, voiced_frames, silent_run
         # 読み上げ中の短い物音(割り込みに満たないもの)は捨てる
-        keep = voiced_frames * FRAME_S >= MIN_VOICED_S and not (speaking and not barged)
+        min_voiced = KEY_MIN_VOICED_S if key_mode else MIN_VOICED_S
+        keep = voiced_frames * FRAME_S >= min_voiced and not (speaking and not barged)
         if keep:
             jobs.put(b"".join(segment))
             if from_file:
@@ -561,7 +566,9 @@ def main() -> int:
                     voiced_frames = 0
                     silent_run = 0
                     preroll.clear()
+                    hold_frames = 0
                 talking = True
+                hold_frames += 1
                 release_run = 0
             elif talking:
                 release_run += 1
@@ -576,6 +583,8 @@ def main() -> int:
                     if texts:
                         state["reason"] = "released"
                         break
+                    if hold_frames * FRAME_S >= KEY_MIN_HOLD_S:
+                        play(CUE_MISS)  # 押して話したのに、文字にならなかった。もう一度話してもらう
         # キーの方式では、押していない間の音を捨てる(声の判定もしない)
         voiced = vad.is_speech(frame, RATE) if (talking or not key_mode) else False
         recent.append(voiced)
