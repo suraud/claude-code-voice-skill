@@ -466,6 +466,54 @@ def play(path: str) -> None:
         pass
 
 
+def boost(pcm: bytes) -> bytes:
+    """声が小さいとき(Mac 本体のマイクで、離れて話したときなど)、認識に渡す前に音を大きくする。"""
+    samples = array.array("h", pcm)
+    peak = max((abs(v) for v in samples), default=0)
+    if not 300 <= peak < 12000:
+        return pcm  # ほぼ無音か、十分な大きさ
+    gain = min(8.0, 20000 / peak)
+    return array.array("h", (max(-32768, min(32767, int(v * gain))) for v in samples)).tobytes()
+
+
+_back: list = []
+
+
+def to_notation(text: str) -> str:
+    """利用者の読みがなの表にある語が、読み(カタカナ)で認識されたら、表記に直す(ワイファイ → Wi-Fi)。
+
+    利用者が自分で登録した語だけを対象にする。共通の表の語(一般の語)は、直さない。
+    """
+    if not _back:
+        pairs = []
+        try:
+            with open(YOMI_USER_PATH, encoding="utf-8") as f:
+                for line in f:
+                    if not line.startswith("#") and "\t" in line:
+                        cols = [x.strip() for x in line.rstrip("\n").split("\t")]
+                        word, reading = cols[0], cols[1]
+                        if word and len(reading) >= 3:  # 短い読みは、ほかの語の一部に当たりやすいので直さない
+                            pairs.append((reading, word))
+                        # 3 列目からは、その語の聞き間違い(例: PostgreSQL が「ポストグレス」と認識される)。表記に直す
+                        pairs.extend((wrong, word) for wrong in cols[2:] if word and len(wrong) >= 2)
+        except OSError:
+            pass
+        _back.append(sorted(pairs, key=lambda x: -len(x[0])))
+        # 表記のゆれ(大文字と小文字、ハイフンや空白の有無)も、登録した表記にそろえる(wifi → Wi-Fi)
+        loose = []
+        for word in dict.fromkeys(w for _, w in pairs):
+            core = re.sub(r"[^A-Za-z0-9]", "", word)
+            if len(core) >= 3 and core.isascii():
+                loose.append((re.compile(r"(?<![A-Za-z0-9])" + r"[-\s]?".join(map(re.escape, core)) + r"(?![A-Za-z0-9])",
+                                         re.IGNORECASE), word))
+        _back.append(loose)
+    for reading, word in _back[0]:
+        text = text.replace(reading, word)
+    for pattern, word in _back[1]:
+        text = pattern.sub(lambda m: word, text)
+    return text
+
+
 def to_wav(pcm: bytes) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -522,13 +570,13 @@ def transcribe(client: httpx.Client, pcm: bytes) -> str:
     prompt = whisper_prompt()
     if prompt:
         data["prompt"] = prompt
-    r = client.post(WHISPER_URL, files={"file": ("segment.wav", to_wav(pcm), "audio/wav")}, data=data)
+    r = client.post(WHISPER_URL, files={"file": ("segment.wav", to_wav(boost(pcm)), "audio/wav")}, data=data)
     r.raise_for_status()
     text = " ".join(r.json().get("text", "").split())
     bare = re.sub(rf"[{BOUNDARY}]", "", text)
     if bare in HALLUCINATIONS or (prompt and bare == re.sub(rf"[{BOUNDARY}]", "", prompt)):
         return ""  # 決まった聞き間違い、または、教えた語の並びがそのまま返ってきた
-    return text
+    return to_notation(text)
 
 
 # 読みがな。字幕にはふつうの表記で出し、声では読みで読む。
@@ -556,6 +604,40 @@ def load_yomi() -> dict[str, str]:
     return table
 
 
+KANJI_DIGITS = "〇一二三四五六七八九"
+NUMBER = re.compile(r"(?<![A-Za-z0-9.])(\d+)(?:\.(\d+))?(?![A-Za-z0-9])( ?)")
+
+
+def kanji_number(digits: str) -> str:
+    """算用数字を、漢数字に直す(16 → 十六、2026 → 二千二十六)。日本語の声は、算用数字の読みが不安定なため。"""
+    if len(digits) > 8 or (len(digits) > 1 and digits[0] == "0"):
+        return "".join(KANJI_DIGITS[int(d)] for d in digits)  # 長い番号や、0 で始まる番号は、1 桁ずつ読む
+    n = int(digits)
+    if n == 0:
+        return "〇"
+    out = ""
+    for unit, name in ((10000, "万"), (1, "")):
+        part, n = divmod(n, unit)
+        if part == 0:
+            continue
+        chunk = ""
+        for u, nm in ((1000, "千"), (100, "百"), (10, "十"), (1, "")):
+            d, part = divmod(part, u)
+            if d:
+                chunk += ("" if d == 1 and u > 1 else KANJI_DIGITS[d]) + nm
+        out += chunk + name
+    return out
+
+
+def spoken_number(m: re.Match) -> str:
+    """文の中の数を、声で読む形に直す。「2 つ」は「二つ」、「0.8 秒」は「れいてん八秒」。数のあとの空白は詰める。"""
+    whole = kanji_number(m.group(1))
+    if m.group(2):
+        # 小数。「・」でつなぐと、声は点を飛ばして読む(1.25 が「いちにご」になった)ので、「てん」と書く
+        whole = ("れい" if whole == "〇" else whole) + "てん" + "".join(KANJI_DIGITS[int(d)] for d in m.group(2))
+    return whole
+
+
 def split_say(text: str) -> tuple[str, str, list[tuple[int, int]]]:
     """読み上げる文を、字幕に出す文と、声で読む文に分ける。
 
@@ -578,15 +660,26 @@ def split_say(text: str) -> tuple[str, str, list[tuple[int, int]]]:
         spoken.append(spoken_piece)
         points.append((sum(map(len, spoken)), sum(map(len, shown))))
 
+    def numbers(chunk: str) -> None:
+        # 表にない部分。算用数字を、漢数字に直して読む(字幕には、算用数字のまま出す)
+        pos = 0
+        for m in NUMBER.finditer(chunk):
+            if m.start() > pos:
+                add(chunk[pos : m.start()], chunk[pos : m.start()])
+            add(m.group(0), spoken_number(m))
+            pos = m.end()
+        if pos < len(chunk):
+            add(chunk[pos:], chunk[pos:])
+
     def plain(chunk: str) -> None:
         pos = 0
         for m in (by_table.finditer(chunk) if by_table else ()):
             if m.start() > pos:
-                add(chunk[pos : m.start()], chunk[pos : m.start()])
+                numbers(chunk[pos : m.start()])
             add(m.group(0), table[m.group(0).lower()])
             pos = m.end()
         if pos < len(chunk):
-            add(chunk[pos:], chunk[pos:])
+            numbers(chunk[pos:])
 
     pos = 0
     for m in RUBY.finditer(text):  # {表記|読み} の読みは、表で置き換えない
@@ -605,22 +698,31 @@ def to_shown(points: list[tuple[int, int]], n: int) -> int:
     return points[-1][1]
 
 
-def yomi_add(word: str, reading: str) -> int:
-    """利用者の読みがなの表に、表記と読みを足す。同じ表記(大文字と小文字は区別しない)があれば書き換える。"""
+def yomi_add(word: str, reading: str, wrongs: list[str] | None = None) -> int:
+    """利用者の読みがなの表に、表記と読みを足す。同じ表記(大文字と小文字は区別しない)があれば書き換える。
+
+    wrongs は、その語の聞き間違い(音声認識が出してしまう文字)。認識の結果に出てきたら、表記に直す。
+    すでに登録されている聞き間違いは、引き継ぐ。
+    """
     word, reading = " ".join(word.split()), " ".join(reading.split())
-    if not word or not reading or "\t" in word + reading:
+    wrongs = [" ".join(w.split()) for w in (wrongs or []) if w.strip()]
+    if not word or not reading or "\t" in word + reading + "".join(wrongs):
         print("エラー: 表記と読みを指定してください", file=sys.stderr)
         return 2
     fd = os.open(YOMI_USER_PATH, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+", encoding="utf-8") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         lines = [line.rstrip("\n") for line in f]
-        kept = [line for line in lines if line.startswith("#") or line.split("\t")[0].strip().lower() != word.lower()]
-        kept.append(f"{word}\t{reading}")
+        same = [line for line in lines if not line.startswith("#") and line.split("\t")[0].strip().lower() == word.lower()]
+        for line in same:  # 前に登録した聞き間違いを引き継ぐ
+            wrongs = [w.strip() for w in line.split("\t")[2:] if w.strip() and w.strip() not in wrongs] + wrongs
+        kept = [line for line in lines if line not in same]
+        kept.append("\t".join([word, reading] + wrongs))
         f.seek(0)
         f.truncate()
         f.write("\n".join(kept) + "\n")
-    print(f"読みがなを登録しました: {word} → {reading}(全セッションで、次の読み上げから効きます)")
+    extra = f"。聞き間違い「{'」「'.join(wrongs)}」は {word} に直します" if wrongs else ""
+    print(f"読みがなを登録しました: {word} → {reading}{extra}(全セッションで、次の読み上げから効きます)")
     return 0
 
 
@@ -1179,7 +1281,7 @@ def main() -> int:
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")
-    ap.add_argument("--yomi", nargs=2, metavar=("表記", "読み"), help="利用者の読みがなの表に、表記と読みを足す(同じ表記があれば書き換える)")
+    ap.add_argument("--yomi", nargs="+", metavar="語", help="利用者の読みがなの表に足す。表記、読み、(あれば)聞き間違いの順に指定する。同じ表記があれば書き換える")
     ap.add_argument("--mic", choices=("builtin", "default"), help="聞き取りに使うマイクを選ぶ。builtin: Mac 本体のマイク。default: 既定の入力(イヤホンなど)。全セッションで共通")
     ap.add_argument("--print-mode", action="store_true", help="いま選ばれている聞き取りの方式を表示する(voice.sh on と status が呼ぶ)")
     ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
@@ -1194,7 +1296,10 @@ def main() -> int:
     if args.memo_watch:
         return memo_watch()
     if args.yomi:
-        return yomi_add(args.yomi[0], args.yomi[1])
+        if len(args.yomi) < 2:
+            print("エラー: 表記と読みを指定してください", file=sys.stderr)
+            return 2
+        return yomi_add(args.yomi[0], args.yomi[1], args.yomi[2:])
     if args.mic:
         record_set("mic", args.mic)
     if args.print_mode or args.mic:

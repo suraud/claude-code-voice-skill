@@ -194,9 +194,10 @@ case "${1:-}" in
     ;;
   yomi)
     # 読みがなを登録する。字幕には表記のまま出し、声では読みで読む。利用者の表(Mac の中だけ)に書く。
-    [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "使い方: $0 yomi '表記' '読み'" >&2; exit 2; }
+    [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "使い方: $0 yomi '表記' '読み' ['聞き間違い' ...]" >&2; exit 2; }
     [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
-    exec "$PY" "$(dirname "$0")/listen.py" --yomi "$2" "$3"
+    shift
+    exec "$PY" "$(dirname "$0")/listen.py" --yomi "$@"   # 表記、読み、(あれば)聞き間違い
     ;;
   notify)
     # Claude Code の hook から呼ぶ。実行の確認が画面に出たことを、音声で会話中のセッションに限って声で知らせる。
