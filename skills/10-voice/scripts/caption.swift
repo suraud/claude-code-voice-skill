@@ -17,6 +17,9 @@
 // - 右上の停止ボタンを押すと、すべてのセッションが話すのも聞くのもやめる(会議のときなど)。
 //   もう一度押すと再開する
 // - Claude Code を終了したセッションは、タブから消える
+// - 窓の左下に、読み上げの再生位置のつまみがある。読み上げ中は進み、動かすと、その位置から読み直す。
+//   読み終えたあとも、そのセッションが返事を待っている間は使える。
+//   読み上げ中の発言は、読み終えた部分を明るく、これから読む部分を薄く表示する。つまみを動かすと、境目も動く
 // - 右上の「?」を押すと、使い方の一覧を表示する。もう一度押すと、字幕に戻る
 // - 右上の × で隠せる。隠しても、次の読み上げや発言でまた出る
 // - 表示と、置き場所の書き換えだけを行う。どこにも送信しない
@@ -29,11 +32,16 @@ guard CommandLine.arguments.count > 2 else {
 }
 let captionDir = CommandLine.arguments[1]
 let sessionsPath = CommandLine.arguments[2]
+// 再生の位置(listen.py が書く)と、つまみからの位置の指定(この窓が書く)。記録と同じフォルダに置く
+let stateDir = (sessionsPath as NSString).deletingLastPathComponent
+let playbackPath = stateDir + "/10-voice-playback.json"
+let seekPath = stateDir + "/10-voice-seek.json"
 let maxShownEntries = 300  // 表示するのは直近の分だけ。ファイルには全部残る
 let allTab = "すべて"
 let userName = "あなた"
 let pollSeconds: TimeInterval = 0.3
 let barHeight: CGFloat = 30
+let seekHeight: CGFloat = 22   // 再生位置のつまみの行
 let lanes: [(key: String, title: String)] = [("normal", "いま話す"), ("later", "あとで")]
 
 /// 「?」で表示する使い方。見出しと、操作・説明の組
@@ -55,6 +63,7 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("丸の色", "緑: 会話中　橙: 話したくて待っている　灰: 作業中、または声では待っていない(画面を見る)"),
     ]),
     ("窓", [
+        ("読み上げの位置のつまみ(左下)", "読み上げ中は進む。動かすと、その位置から読み直す。返事を待っている間だけ使える。字幕は、読み終えた部分が明るくなる"),
         ("1x / 1.25x", "読み上げの速さを切り替える。途中で押すと、少し戻って、新しい速さで読む"),
         ("⏸ 停止 / ▶ 再開", "すべてのセッションが、話すのも聞くのもやめる(会議のとき)"),
         ("×", "隠す。次の読み上げや発言でまた出る"),
@@ -337,6 +346,19 @@ final class CaptionController: NSObject {
     let pauseButton = NSButton(frame: .zero)
     let helpButton = NSButton(frame: .zero)
     let speedButton = NSButton(frame: .zero)
+    let seekSlider = NSSlider(frame: .zero)
+    let seekLabel = NSTextField(labelWithString: "")
+    var seekName = ""          // つまみが指しているセッション
+    var seekHeldUntil = Date.distantPast   // つまみを動かした直後は、表示を上書きしない
+    var seekDragging = false
+    var seekActive = false
+    var seekFrac = 0.0         // 読み終えた割合(つまみを動かしている間は、つまみの位置)
+    var seekPre = 0.0          // 読み上げの頭にある、字幕に出ない部分(名乗り)の割合
+    /// 字幕の文の中で、読み終えた割合(名乗りの分を除く)
+    var markFrac: Double { seekPre < 0.95 ? max(0, (seekFrac - seekPre) / (1 - seekPre)) : seekFrac }
+    var shownMark = -1         // 字幕に反映済みの、読み終えた文字数
+    var markedRange: NSRange? = nil   // 読み上げ中の発言の本文が、表示の中で占める範囲
+    var markedText = ""
     var speed = 1.0
     var showingHelp = false
     var draggingChip = false
@@ -370,8 +392,8 @@ final class CaptionController: NSObject {
         bar.autoresizingMask = [.width, .minYMargin]
         content.addSubview(bar)
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: content.bounds.width,
-                                                height: content.bounds.height - barHeight))
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: seekHeight, width: content.bounds.width,
+                                                height: content.bounds.height - barHeight - seekHeight))
         scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -443,6 +465,109 @@ final class CaptionController: NSObject {
         bar.addSubview(speedButton)
         speed = loadSpeed()
         styleSpeed()
+
+        // 再生位置のつまみ。窓の左下に、短めに置く(端から端まで引かなくて済むように)
+        seekSlider.frame = NSRect(x: 12, y: 2, width: 240, height: seekHeight - 4)
+        seekSlider.minValue = 0
+        seekSlider.maxValue = 1
+        seekSlider.controlSize = .small
+        seekSlider.isContinuous = true    // 動かしている間も知らせる(字幕の境目を動かすため)。読み直すのは離したとき
+        seekSlider.target = self
+        seekSlider.action = #selector(seekChanged(_:))
+        seekSlider.autoresizingMask = [.maxXMargin, .maxYMargin]
+        seekSlider.isEnabled = false
+        seekSlider.toolTip = "読み上げの位置。動かすと、その位置から読み直す(返事を待っている間だけ使える)"
+        content.addSubview(seekSlider)
+        seekLabel.frame = NSRect(x: 258, y: 3, width: 82, height: seekHeight - 6)
+        seekLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        seekLabel.textColor = NSColor.white.withAlphaComponent(0.6)
+        seekLabel.alignment = .left
+        seekLabel.autoresizingMask = [.maxXMargin, .maxYMargin]
+        content.addSubview(seekLabel)
+    }
+
+    @objc func seekChanged(_ sender: Any?) {
+        // 動かしている間は、字幕の境目だけを動かす。離したときに、その位置から読み直す
+        seekFrac = seekSlider.doubleValue
+        updateMark()
+        if NSApp.currentEvent?.type != .leftMouseUp {
+            seekDragging = true
+            return
+        }
+        seekDragging = false
+        seekHeldUntil = Date().addingTimeInterval(0.8)
+        let body: [String: Any] = ["name": seekName, "frac": seekSlider.doubleValue, "t": Date().timeIntervalSince1970]
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
+        FileManager.default.createFile(atPath: seekPath, contents: data, attributes: [.posixPermissions: 0o600])
+    }
+
+    /// 再生の位置を読み、つまみに反映する
+    func refreshSeek() {
+        func clock(_ s: Double) -> String { String(format: "%d:%02d", Int(s) / 60, Int(s) % 60) }
+        var active = false
+        var pos = 0.0, dur = 0.0
+        if let data = FileManager.default.contents(atPath: playbackPath),
+           let p = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let stamp = p["t"] as? Double ?? 0
+            // 聞き取りのプロセスが異常終了しても、古い記録でつまみが使えるままにならないようにする
+            active = (p["active"] as? Bool ?? false) && Date().timeIntervalSince1970 - stamp < 4
+            pos = p["pos"] as? Double ?? 0
+            dur = p["dur"] as? Double ?? 0
+            seekName = p["name"] as? String ?? ""
+            seekPre = p["pre"] as? Double ?? 0
+        }
+        seekSlider.isEnabled = active && dur > 0
+        seekActive = active && dur > 0
+        if !seekActive {
+            seekSlider.doubleValue = 0
+            seekLabel.stringValue = ""
+            seekDragging = false
+            updateMark()
+            return
+        }
+        if !seekDragging && Date() >= seekHeldUntil {
+            seekFrac = min(1, pos / dur)
+            seekSlider.doubleValue = seekFrac
+        }
+        seekLabel.stringValue = clock(seekFrac * dur) + " / " + clock(dur)
+        updateMark()
+    }
+
+    /// 読み上げ中の発言(つまみが指しているセッションの、Claude の最後の発言)が、表示の何番目か
+    func markedIndex(in shown: [Entry]) -> Int? {
+        guard seekActive else { return nil }
+        return shown.lastIndex { $0.session == seekName && $0.who != userName && $0.who != "メモ" }
+    }
+
+    /// 読み終えた文字数が変わったら、その発言の色だけを塗り替える。
+    /// 字幕全体は描き直さない(描き直すと、表示がちらつき、スクロールの位置も動いてしまう)
+    func updateMark() {
+        if showingHelp { return }
+        let shown = selected == allTab ? entries : entries.filter { $0.session == selected }
+        guard let i = markedIndex(in: shown) else {
+            if markedRange != nil { render() }   // 読み上げが終わった。ふつうの表示に戻す
+            return
+        }
+        guard let range = markedRange, markedText == shown[i].text else {
+            render()                             // 読み上げ中の発言が変わった
+            return
+        }
+        let mark = max(0, min(shown[i].text.count, Int(Double(shown[i].text.count) * markFrac)))
+        if mark == shownMark { return }
+        shownMark = mark
+        paintMark(range: range, text: shown[i].text, mark: mark)
+    }
+
+    /// 読み終えた部分を明るく、これから読む部分を薄く塗る
+    func paintMark(range: NSRange, text: String, mark: Int) {
+        guard let storage = textView.textStorage, range.location + range.length <= storage.length else { return }
+        let read = String(text.prefix(mark)).utf16.count
+        storage.beginEditing()
+        storage.addAttribute(.foregroundColor, value: NSColor.white,
+                             range: NSRange(location: range.location, length: read))
+        storage.addAttribute(.foregroundColor, value: NSColor.white.withAlphaComponent(0.38),
+                             range: NSRange(location: range.location + read, length: range.length - read))
+        storage.endEditing()
     }
 
     @objc func cycleSpeed(_ sender: Any?) {
@@ -613,6 +738,10 @@ final class CaptionController: NSObject {
         }
         let shown = selected == allTab ? entries : entries.filter { $0.session == selected }
         let out = NSMutableAttributedString()
+        let marked = markedIndex(in: shown)
+        markedRange = nil
+        markedText = ""
+        shownMark = -1
         for (i, e) in shown.enumerated() {
             let isUser = e.who == userName
             let isLatest = i == shown.count - 1
@@ -634,12 +763,22 @@ final class CaptionController: NSObject {
             style.lineSpacing = 2
             style.firstLineHeadIndent = 14                     // 本文を、印のぶん下げる
             style.headIndent = 14
+            let font = NSFont.systemFont(ofSize: 16, weight: isLatest ? .medium : .regular)
+            if i == marked {
+                // 読み上げ中の発言。色は、あとで paintMark が塗る
+                markedRange = NSRange(location: out.length, length: (e.text as NSString).length)
+                markedText = e.text
+            }
             out.append(NSAttributedString(string: e.text + "\n", attributes: [
-                .font: NSFont.systemFont(ofSize: 16, weight: isLatest ? .medium : .regular),
-                .foregroundColor: body, .paragraphStyle: style,
+                .font: font, .foregroundColor: body, .paragraphStyle: style,
             ]))
         }
         textView.textStorage?.setAttributedString(out)
+        if let range = markedRange {
+            shownMark = max(0, min(markedText.count, Int(Double(markedText.count) * markFrac)))
+            paintMark(range: range, text: markedText, mark: shownMark)
+        }
+        textView.layoutManager?.ensureLayout(for: textView.textContainer!)   // 末尾まで確実に送る
         textView.scrollToEndOfDocument(nil)
     }
 
@@ -666,6 +805,7 @@ final class CaptionController: NSObject {
     var ticks = 0
 
     func refresh() {
+        refreshSeek()
         ticks += 1
         if ticks % 10 == 1 { pruneEndedSessions() }  // 約 3 秒ごとに、終了したセッションを消す
         let first = lastRaw == nil

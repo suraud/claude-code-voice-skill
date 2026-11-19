@@ -83,6 +83,9 @@ LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice.lock")
 # その間の音が乱れる。読み上げは、最後にマイクを閉じてから MIC_SETTLE_S たつのを待って始める
 MIC_CLOSED_PATH = os.path.expanduser("~/.voicemode/10-voice-mic-closed")
 MIC_SETTLE_S = 1.5
+# 再生の位置(Speaker が書き、字幕の窓のつまみが読む)と、つまみからの位置の指定(字幕の窓が書く)
+PLAYBACK_PATH = os.path.expanduser("~/.voicemode/10-voice-playback.json")
+SEEK_PATH = os.path.expanduser("~/.voicemode/10-voice-seek.json")
 SPEAK_LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice-speak.lock")  # 読み上げの間だけ持つ。声を重ねないため
 LOCK_WAIT_S = 420    # 順番を待つ上限。超えたら、読み上げずに戻る
 MIN_LISTEN_S = 120   # 長く待ったあとでも、聞き取りに使える最低限の秒数
@@ -453,18 +456,27 @@ def speech_speed() -> float:
 
 
 class Speaker:
-    """Mac 内の Kokoro で音声を作り、途中で止められる形で再生する。"""
+    """Mac 内の Kokoro で音声を作り、途中で止められる形で再生する。
 
-    def __init__(self, text: str):
+    字幕の窓のつまみで、再生の位置を変えられる。読み終えたあとも、聞き取りが続いている間は、
+    つまみを動かすと、その位置から読み直す。位置は PLAYBACK_PATH に書き、字幕の窓が表示する。
+    """
+
+    def __init__(self, text: str, name: str = "", stop_on_key: bool = False, lead: int = 0):
         self.text = text
+        self.lead = lead                 # 文の頭にある、字幕には出ない部分(名乗り)の文字数
+        self.name = name
+        self.stop_on_key = stop_on_key   # 読み直しの途中でキーが押されたら止める(キーの方式)
         self.ready = threading.Event()   # 音声ができた(または失敗した)
-        self.done = threading.Event()    # 再生が終わった(または止めた、失敗した)
-        self.cancel = threading.Event()
+        self.done = threading.Event()    # 最初の再生が終わった(または止めた、失敗した)
+        self.cancel = threading.Event()  # 最初の再生を止める(割り込みなど)
+        self.closed = threading.Event()  # 聞き取りが終わった。読み直しも受け付けない
         self.error: str | None = None
         self.pcm = b""
-        self.written = 0  # 再生に渡したバイト数(いまの pcm の中で)
-        self.offset = 0   # いまの pcm が、文の何文字目から始まるか(途中で速さを変えると、残りを作り直す)
+        self.written = 0  # 再生に渡したバイト数
         self.speed = speech_speed()
+        self.seek_seen = self._seek_stamp()
+        self.first_heard: str | None = None  # 最初の再生で伝わった範囲(読み直しでは変えない)
         threading.Thread(target=self._synth, daemon=True).start()
 
     def _request(self, text: str, speed: float) -> bytes:
@@ -483,35 +495,135 @@ class Speaker:
             self.error = f"{type(e).__name__}: {e}"
         self.ready.set()
 
-    def _respeed(self, speed: float) -> bool:
-        """読み上げの途中で速さが変わった。読み終えた文の切れ目から先を、新しい速さで作り直す。"""
-        heard = self.heard_text()
-        rest = self.text[len(heard):]
-        self.speed = speed
-        if not rest.strip():
-            return False
-        try:
-            pcm = self._request(rest, speed)
-        except Exception:
-            return False  # 作り直せなければ、いまの速さのまま読み続ける
-        self.offset, self.pcm, self.written = len(heard), pcm, 0
-        return True
-
     def heard_text(self) -> str:
         """止めた時点までに読み上げた部分を、再生した長さの割合から見積もる。
 
         見積もりなので、直前の文の切れ目まで戻して、控えめに返す。
         """
+        if self.first_heard is not None:
+            return self.first_heard
         if not self.pcm:
             return ""
         played = max(0, self.written - int(0.3 * KOKORO_RATE) * 2)  # 出力の遅れの分を引く
-        n = self.offset + int((len(self.text) - self.offset) * played / len(self.pcm))
+        n = int(len(self.text) * played / len(self.pcm))
         head = self.text[:n]
         cut_at = max(head.rfind(c) for c in "。、？！")
         return head[: cut_at + 1] if cut_at >= 0 else ""
 
     def start(self) -> None:
         threading.Thread(target=self._play, daemon=True).start()
+
+    def close(self) -> None:
+        """聞き取りの終わりに呼ぶ。再生を止め、つまみを使えない表示にする。"""
+        self.cancel.set()
+        self.closed.set()
+        self._report(False, active=False)
+
+    @staticmethod
+    def _seek_stamp() -> float:
+        try:
+            return os.path.getmtime(SEEK_PATH)
+        except OSError:
+            return 0.0
+
+    def _seek_request(self) -> float | None:
+        """字幕の窓のつまみが動かされていたら、その位置(0〜1)を返す。"""
+        stamp = self._seek_stamp()
+        if stamp <= self.seek_seen:
+            return None
+        self.seek_seen = stamp
+        try:
+            with open(SEEK_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("name") not in ("", self.name):
+                return None
+            return min(1.0, max(0.0, float(data.get("frac", 0))))
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def _report(self, playing: bool, active: bool = True) -> None:
+        """再生の位置を書く(字幕の窓のつまみが読む)。"""
+        try:
+            total = len(self.pcm) / (KOKORO_RATE * 2) if self.pcm else 0.0
+            # 再生に渡してから音が出るまでの遅れ(約 0.3 秒)を引いて、聞こえている位置を書く。
+            # pre は、名乗り(字幕に出ない部分)が全体に占める割合。字幕の色分けの位置を合わせるのに使う
+            heard = max(0, self.written - int(0.3 * KOKORO_RATE) * 2) if playing else self.written
+            data = {"name": self.name, "pos": round(heard / (KOKORO_RATE * 2), 2), "dur": round(total, 2),
+                    "pre": round(self.lead / max(1, len(self.text)), 4),
+                    "playing": playing, "active": active, "t": round(time.time(), 2)}
+            fd = os.open(PLAYBACK_PATH + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, ensure_ascii=False))
+            os.replace(PLAYBACK_PATH + ".tmp", PLAYBACK_PATH)
+        except OSError:
+            pass
+
+    def _align(self, frac: float) -> int:
+        """位置(0〜1)を、音声の中のバイト位置に直す(16bit の境目にそろえる)。"""
+        return int(len(self.pcm) * frac) // 2 * 2
+
+    def _seek_start(self, frac: float) -> int:
+        """つまみで指定された位置から、読み直しを始めるバイト位置を決める。
+
+        文字と音の対応は概算なので、指定より先から始まることがある。少し手前から始める。
+        すぐ手前(12 文字以内)に文の区切り(。、？！)があれば、そこから始める。
+        """
+        n = int(len(self.text) * frac)
+        cut_at = max(self.text.rfind(c, 0, n) for c in "。、？！")
+        start = cut_at + 1 if cut_at >= 0 and n - (cut_at + 1) <= 12 else max(0, n - 3)
+        back = int(0.2 * KOKORO_RATE) * 2  # 0.2 秒ぶん手前から
+        return max(0, self._align(start / max(1, len(self.text))) - back)
+
+    def _run(self, out, i: int, first: bool) -> None:
+        """位置 i から最後まで再生する。止める指示、つまみ、速さの変更に、0.05 秒ごとに応じる。"""
+        step = KOKORO_RATE // 20 * 2
+        checked = 0.0
+        while i < len(self.pcm):
+            if self.closed.is_set() or (first and self.cancel.is_set()):
+                out.abort()
+                return
+            if not first and self.stop_on_key and key_down():
+                out.abort()  # 読み直しの途中で、利用者が話し始めた
+                return
+            out.write(self.pcm[i : i + step])
+            i += step
+            self.written = min(i, len(self.pcm))
+            if time.time() - checked >= 0.2:
+                checked = time.time()
+                self._report(True)
+                frac = self._seek_request()
+                if frac is not None:
+                    # 右端まで動かされたら、そこで読み終える。それ以外は、手前の区切りから読み直す
+                    i = self._align(1.0) if frac >= 0.995 else self._seek_start(frac)
+                    self.written = min(i, len(self.pcm))
+                speed = speech_speed()
+                if abs(speed - self.speed) > 0.01:
+                    # 速さが変えられた。全体を新しい速さで作り直し、読み終えた文の切れ目から続ける
+                    heard = len(self.heard_text()) / max(1, len(self.text))
+                    self.speed = speed
+                    try:
+                        self.pcm = self._request(self.text, speed)
+                        i = self._align(heard)
+                    except Exception:
+                        pass  # 作り直せなければ、いまの速さのまま読み続ける
+
+    def _open(self, sd):
+        """ほかの読み上げ(別のセッションの知らせなど)が終わるのを待ち、出力を開く。"""
+        speak_lock = open(SPEAK_LOCK_PATH, "a+", encoding="utf-8")
+        os.chmod(SPEAK_LOCK_PATH, 0o600)
+        waited = 0.0
+        while waited < 60:
+            try:
+                fcntl.flock(speak_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if self.cancel.is_set() or self.closed.is_set():
+                    speak_lock.close()
+                    return None, None
+                time.sleep(0.2)
+                waited += 0.2
+        wait_mic_settle(self.cancel)
+        return speak_lock, sd.RawOutputStream(samplerate=KOKORO_RATE, channels=1, dtype="int16")
 
     def _play(self) -> None:
         import sounddevice as sd
@@ -520,41 +632,39 @@ class Speaker:
             self.ready.wait()
             if self.error or self.cancel.is_set():
                 return
-            step = KOKORO_RATE // 20 * 2  # 0.05 秒ずつ書き、止める指示にすぐ応じる
-            # ほかの読み上げ(別のセッションの確認待ちの知らせなど)が終わるのを待つ
-            speak_lock = open(SPEAK_LOCK_PATH, "a+", encoding="utf-8")
-            os.chmod(SPEAK_LOCK_PATH, 0o600)
-            waited = 0.0
-            while waited < 60:
-                try:
-                    fcntl.flock(speak_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    if self.cancel.is_set():
-                        return
-                    time.sleep(0.2)
-                    waited += 0.2
-            wait_mic_settle(self.cancel)
-            with speak_lock, sd.RawOutputStream(samplerate=KOKORO_RATE, channels=1, dtype="int16") as out:
-                i = 0
-                checked = time.time()
-                while i < len(self.pcm):
-                    if self.cancel.is_set():
-                        out.abort()
-                        return
-                    out.write(self.pcm[i : i + step])
-                    i += step
-                    self.written = min(i, len(self.pcm))
-                    if time.time() - checked >= 0.4:
-                        # 字幕の窓で速さが変えられたら、残りを新しい速さで読む
-                        checked = time.time()
-                        speed = speech_speed()
-                        if abs(speed - self.speed) > 0.01 and self._respeed(speed):
-                            i = 0
+            speak_lock, out = self._open(sd)
+            if out is None:
+                return
+            with speak_lock, out:
+                self._run(out, 0, True)
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
         finally:
+            self.first_heard = self.heard_text()
             self.done.set()
+        # 読み終えたあと。聞き取りが続いている間は、つまみが動かされたら、その位置から読み直す
+        try:
+            self._report(False)
+            beat = time.time()
+            while not self.closed.wait(0.2):
+                if time.time() - beat >= 1:
+                    beat = time.time()
+                    self._report(False)  # つまみが使えることを、字幕の窓に知らせ続ける
+                frac = self._seek_request()
+                if frac is None or not self.pcm:
+                    continue
+                self.cancel.clear()
+                speak_lock, out = self._open(sd)
+                if out is None:
+                    continue
+                self.written = self._seek_start(frac)
+                with speak_lock, out:
+                    self._run(out, self.written, False)
+                self._report(False)
+        except Exception:
+            pass
+        finally:
+            self._report(False, active=False)
 
 
 def mic_frames(stop: threading.Event, on_ready):
@@ -721,6 +831,8 @@ def notify() -> int:
     caption(name, "Claude", text)
     speaker.start()
     speaker.done.wait(120)
+    speaker.close()
+    time.sleep(0.4)  # つまみを使えない表示に戻すのを待つ
     if speaker.error:
         play(CUE_MISS)
         time.sleep(1)
@@ -957,7 +1069,8 @@ def main() -> int:
             args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
         if switched and say:
             say = f"{args.name}、からです。{say}"  # 別のセッションから切り替わったときは名乗る
-    speaker = Speaker(say) if say and not from_file else None
+    lead = len(say) - len(args.say) if say and args.say else 0  # 名乗りを足した分
+    speaker = Speaker(say, args.name, stop_on_key=key_mode, lead=lead) if say and not from_file else None
 
     def on_ready() -> None:
         if speaker:
@@ -1112,7 +1225,7 @@ def main() -> int:
     frames.close()  # ここでマイクを閉じる(文字にするのを待つ間、開いたままにしない)
     cut_short = bool(speaker) and speaking and not barged  # 読み上げの途中で、停止や保留になった
     if speaker:
-        speaker.cancel.set()
+        speaker.close()
     if in_speech and not state["reason"]:
         cut()  # ファイルの終わりなど、区切りの途中で止まった分を文字にする
     jobs.join()
