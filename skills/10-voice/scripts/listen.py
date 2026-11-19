@@ -837,6 +837,7 @@ class Speaker:
         self.first_heard: str | None = None  # 最初の再生で伝わった範囲(読み直しでは変えない)
         self.pending: int | None = None      # 止められた所から読み上げを続ける、という指示(バイト位置)
         self.playing = False                 # いま、音を出しているか
+        self.thread: threading.Thread | None = None
         threading.Thread(target=self._synth, daemon=True).start()
 
     def _request(self, text: str, speed: float) -> bytes:
@@ -871,7 +872,8 @@ class Speaker:
         return head[: cut_at + 1] if cut_at >= 0 else ""
 
     def start(self) -> None:
-        threading.Thread(target=self._play, daemon=True).start()
+        self.thread = threading.Thread(target=self._play, daemon=True)
+        self.thread.start()
 
     def cut_short(self) -> bool:
         """読み上げが、途中で止められたままか。"""
@@ -886,6 +888,10 @@ class Speaker:
         """聞き取りの終わりに呼ぶ。再生を止め、つまみを使えない表示にする。"""
         self.cancel.set()
         self.closed.set()
+        # 再生の後始末(音の出力を止めて閉じる)が終わるのを待つ。待たずにプログラムを終えると、
+        # 後始末の最中に終了が重なり、異常終了することがあった
+        if self.thread is not None and self.thread is not threading.current_thread():
+            self.thread.join(timeout=3)
         self._report(False, active=False)
 
     @staticmethod
