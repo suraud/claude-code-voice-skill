@@ -1191,7 +1191,8 @@ def notify() -> int:
     if before is None:
         return 0
     text = f"{name}、確認待ちです。画面を見てください。"
-    speaker = Speaker(text)
+    shown, spoken, points = split_say(text)  # セッションの名前も、読みがなの表で読みに直す
+    speaker = Speaker(spoken, name, shown=shown, points=points)
     try:
         lock = open(LOCK_PATH, "a+", encoding="utf-8")
     except OSError:
@@ -1552,7 +1553,9 @@ def main() -> int:
         if args.wait <= LOCK_WAIT_S:  # 長く待つ指定(バックグラウンド)のときは、コマンドの制限時間を気にしない
             args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
         if switched and say:
-            lead = f"{args.name}、からです。"  # 別のセッションから切り替わったときは名乗る。字幕には出さない
+            # 別のセッションから切り替わったときは名乗る。字幕には出さない。
+            # セッションの名前も、読みがなの表で読みに直す(英字の名前を、登録した読みで読む)
+            lead = f"{split_say(args.name)[1]}、からです。"
             say = lead + say
             points = [(0, 0)] + [(a + len(lead), b) for a, b in points]
     speaker = (Speaker(say, args.name, stop_on_key=key_mode, shown=shown_say, points=points)
