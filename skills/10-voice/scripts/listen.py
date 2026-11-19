@@ -147,6 +147,14 @@ def sessions_update(name: str, state: str | None = None) -> dict:
             me = data["sessions"].setdefault(name, {"lane": "normal", "state": "", "t": 0})
             if me.get("lane") not in LANES:
                 me["lane"] = "normal"
+            # Claude Code のプロセス番号を残す。終了したセッションを、字幕の窓がタブから消すため
+            pid = os.environ.get("CLAUDE_PID", "")
+            if pid.isdigit() and me.get("pid") != int(pid):
+                me["pid"] = int(pid)
+                me["t"] = me.get("t") or 0
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(data, ensure_ascii=False))
             changed = state is not None and me.get("state") != state
             if state is not None:
                 me["state"] = state
@@ -792,7 +800,9 @@ def main() -> int:
         # 利用者が話し終えていない(時間切れ)なら、順番を持ち続ける。同じセッションが聞き取りを再開する。
         # 「以上」やミュートで終わったら手放し、ほかのセッションも話せるようにする
         write_floor(lock, args.name, reason in ("idle", "max", "paused"))
-        sessions_update(args.name, "muted" if reason == "mute" else "working")
+        # 保留や停止で止まったセッションは、まだ話したいことがある。作業中(灰色)ではなく、順番待ち(橙)にする
+        after = "muted" if reason == "mute" else "waiting" if reason in ("yield", "paused") else "working"
+        sessions_update(args.name, after)
     if not from_file:
         play(CUE_END)
         said = " ".join(texts)

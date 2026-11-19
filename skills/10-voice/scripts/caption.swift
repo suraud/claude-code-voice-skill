@@ -16,6 +16,7 @@
 // - 帯の空いているところをつかむと動かせる。右下のつまみを引くと大きさを変えられる
 // - 右上の停止ボタンを押すと、すべてのセッションが話すのも聞くのもやめる(会議のときなど)。
 //   もう一度押すと再開する
+// - Claude Code を終了したセッションは、タブから消える
 // - 右上の × で隠せる。隠しても、次の読み上げや発言でまた出る
 // - 表示と、置き場所の書き換えだけを行う。どこにも送信しない
 
@@ -102,6 +103,27 @@ func loadSessions() -> [String: SessionInfo] {
                                 state: v["state"] as? String ?? "")
     }
     return out
+}
+
+/// Claude Code を終了したセッションを、記録から消す(タブからも消える)。
+/// 記録にあるプロセス番号が、もう動いていないものが対象。番号のない記録は、そのままにする
+func pruneEndedSessions() {
+    guard let data = FileManager.default.contents(atPath: sessionsPath),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let sessions = root["sessions"] as? [String: [String: Any]] else { return }
+    func ended(_ v: [String: Any]) -> Bool {
+        guard let pid = v["pid"] as? Int, pid > 0 else { return false }
+        return kill(pid_t(pid), 0) != 0 && errno == ESRCH
+    }
+    guard sessions.values.contains(where: ended) else { return }
+    updateRecord { root in
+        var sessions = root["sessions"] as? [String: [String: Any]] ?? [:]
+        for (name, v) in sessions where ended(v) {
+            sessions.removeValue(forKey: name)
+            if root["focus"] as? String == name { root.removeValue(forKey: "focus") }
+        }
+        root["sessions"] = sessions
+    }
 }
 
 /// セッションの置き場所を書き換える
@@ -491,7 +513,11 @@ final class CaptionController: NSObject {
         return true
     }
 
+    var ticks = 0
+
     func refresh() {
+        ticks += 1
+        if ticks % 10 == 1 { pruneEndedSessions() }  // 約 3 秒ごとに、終了したセッションを消す
         let first = lastRaw == nil
         let newCaption = readCaptions()
         let newSessions = loadSessions()
