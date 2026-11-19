@@ -159,6 +159,15 @@ case "${1:-}" in
     "$PY" "$(dirname "$0")/listen.py" --print-mode 2>/dev/null
     ;;
   off)
+    # 動いている聞き取りを、すべて止める(ほかのセッションが、裏で順番を待っているものも含む)。
+    # 止めないと、サービスを止めたあとも、マイクを開いたまま、話す順番を持ち続ける
+    if pgrep -f "listen.py" >/dev/null 2>&1; then
+      pkill -TERM -f "listen.py" >/dev/null 2>&1
+      for _ in 1 2 3 4 5 6; do pgrep -f "listen.py" >/dev/null 2>&1 || break; sleep 0.5; done
+      pkill -KILL -f "listen.py" >/dev/null 2>&1
+      echo "聞き取り: 動いていたものを止めました"
+    fi
+    [ -x "$PY" ] && "$PY" "$(dirname "$0")/listen.py" --reset 2>/dev/null   # セッションの記録と順番を、空にする
     memo_off
     caption_off
     stop_one whisper 2022

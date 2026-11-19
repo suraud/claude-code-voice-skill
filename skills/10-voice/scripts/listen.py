@@ -188,6 +188,18 @@ def pid_alive(pid) -> bool:
         return True  # 調べられないときは、動いているものとして扱う
 
 
+def same_boot(recorded) -> bool:
+    """記録にある起動時刻が、いまの起動と同じか。
+
+    起動時刻は、時計の補正で 1 秒ほどずれて報告されることがある。ぴったり一致で比べると、
+    起動し直していないのに、記録を捨ててしまう。数分の差までは、同じ起動として扱う。
+    """
+    try:
+        return abs(int(recorded) - int(boot_id())) <= 300
+    except (TypeError, ValueError):
+        return False
+
+
 def sessions_update(name: str, state: str | None = None) -> dict:
     """自分のセッションを記録に加え(最初は通常)、状態を書く。全セッションの記録を返す。"""
     try:
@@ -198,7 +210,7 @@ def sessions_update(name: str, state: str | None = None) -> dict:
                 data = json.loads(f.read() or "{}")
             except ValueError:
                 data = {}
-            if data.get("boot") != boot_id() or not isinstance(data.get("sessions"), dict):
+            if not same_boot(data.get("boot")) or not isinstance(data.get("sessions"), dict):
                 # Mac を起動し直した。セッションの記録は捨て、方式と速さの選択は引き継ぐ
                 keep = {k: data[k] for k in ("mode", "speed", "mic") if k in data}
                 data = {"boot": boot_id(), "sessions": {}, **keep}
@@ -1052,6 +1064,24 @@ class Speaker:
             self._report(False, active=False)
 
 
+def close_stream(stream) -> None:
+    """マイクの取り込みを閉じる。閉じる処理が固まっても、2 秒で先へ進む。
+
+    閉じる処理が、終わらなくなることがあった(原因は分かっていない)。そこで待ち続けると、
+    マイクを開いたまま、話す順番も持ったまま、プログラムが残ってしまう。
+    """
+    def work() -> None:
+        try:
+            stream.abort()   # たまっている音を待たずに止める
+            stream.close()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(timeout=2)
+
+
 def mic_frames(stop: threading.Event, on_ready):
     import sounddevice as sd
 
@@ -1062,25 +1092,27 @@ def mic_frames(stop: threading.Event, on_ready):
 
     device = input_device()
     warmup = WARMUP_S if device is None else BUILTIN_WARMUP_S
+    stream = sd.RawInputStream(device=device, samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback)
+    stream.start()
     try:
-        with sd.RawInputStream(device=device, samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback):
-            buf = b""
-            received = 0
-            ready = False
-            while not stop.is_set():
-                try:
-                    chunk = q.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-                buf += chunk
-                received += len(chunk)
-                if not ready and received >= warmup * RATE * 2:
-                    ready = True
-                    on_ready()
-                while len(buf) >= FRAME_BYTES:
-                    yield buf[:FRAME_BYTES]
-                    buf = buf[FRAME_BYTES:]
+        buf = b""
+        received = 0
+        ready = False
+        while not stop.is_set():
+            try:
+                chunk = q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            buf += chunk
+            received += len(chunk)
+            if not ready and received >= warmup * RATE * 2:
+                ready = True
+                on_ready()
+            while len(buf) >= FRAME_BYTES:
+                yield buf[:FRAME_BYTES]
+                buf = buf[FRAME_BYTES:]
     finally:
+        close_stream(stream)
         if device is None:
             mic_closed()  # イヤホンのマイクを閉じた。接続が戻るまで、読み上げを少し待たせる
 
@@ -1117,6 +1149,9 @@ def key_frames(stop: threading.Event, on_ready):
                 try:
                     chunk = q.get(timeout=0.2)
                 except queue.Empty:
+                    # 音が届かない(マイクの接続が切れた、など)。キーが離されていたら、待たずに閉じる
+                    if not talk_held():
+                        released += 0.2
                     continue
                 buf += chunk
                 received += len(chunk)
@@ -1132,8 +1167,7 @@ def key_frames(stop: threading.Event, on_ready):
                     break  # 合図の前に離した(ショートカットなど)。何もしない
         finally:
             # 聞き取りを途中でやめたときも、ここでマイクを閉じる
-            stream.stop()
-            stream.close()
+            close_stream(stream)
             if device is None:
                 mic_closed()
 
@@ -1177,7 +1211,7 @@ def notify() -> int:
         except (OSError, ValueError):
             return None
         me = rec.get("sessions", {}).get(name) if isinstance(rec.get("sessions"), dict) else None
-        if rec.get("boot") != boot_id() or rec.get("paused") or not me:
+        if not same_boot(rec.get("boot")) or rec.get("paused") or not me:
             return None
         if me.get("state") == "muted" or (me.get("lane") == "later" and rec.get("focus") != name):
             return None
@@ -1254,7 +1288,7 @@ def stop_check() -> int:
     name = session_name(os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd"))
     rec = read_record() or {}
     me = (rec.get("sessions") or {}).get(name) if isinstance(rec.get("sessions"), dict) else None
-    if rec.get("boot") != boot_id() or not me or me.get("state") in ("muted", "away"):
+    if not same_boot(rec.get("boot")) or not me or me.get("state") in ("muted", "away"):
         return 0
     if time.time() - (me.get("t") or 0) > STOP_CHECK_RECENT_S:
         return 0
@@ -1300,7 +1334,7 @@ def memo_watch() -> int:
         except (OSError, ValueError):
             return None
         sessions = rec.get("sessions") if isinstance(rec.get("sessions"), dict) else {}
-        if rec.get("boot") != boot_id() or rec.get("paused") or rec.get("mode") == "word":
+        if not same_boot(rec.get("boot")) or rec.get("paused") or rec.get("mode") == "word":
             return None  # 合言葉の方式では、キーを使わない
         name = rec.get("focus") if rec.get("focus") in sessions else read_floor(lock)[0]
         if name not in sessions or sessions[name].get("state") == "muted":
@@ -1395,6 +1429,7 @@ def main() -> int:
     ap.add_argument("--mic", choices=("builtin", "default"), help="聞き取りに使うマイクを選ぶ。builtin: Mac 本体のマイク。default: 既定の入力(イヤホンなど)。全セッションで共通")
     ap.add_argument("--print-mode", action="store_true", help="いま選ばれている聞き取りの方式を表示する(voice.sh on と status が呼ぶ)")
     ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
+    ap.add_argument("--reset", action="store_true", help="セッションの記録、話す相手、停止の状態、話す順番を空にする(voice.sh off が呼ぶ)。方式、速さ、マイクの選択は残す")
     ap.add_argument("--cancel", action="store_true", help="このセッションの、動いている聞き取り(バックグラウンドで待っているものを含む)を止める")
     ap.add_argument("--stop-check", action="store_true", help="hook 用。音声会話の途中で、聞き取りを呼ばずにターンを終えようとしたら、引き止める")
     ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
@@ -1407,6 +1442,23 @@ def main() -> int:
         return notify()
     if args.stop_check:
         return stop_check()
+    if args.reset:
+        rec = read_record() or {}
+        keep = {k: rec[k] for k in ("mode", "speed", "mic") if k in rec}
+        fd = os.open(SESSIONS_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps({"boot": boot_id(), "sessions": {}, **keep}, ensure_ascii=False))
+        try:
+            with open(LOCK_PATH, "a+", encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.seek(0)
+                f.truncate()
+        except OSError:
+            pass
+        return 0
     if args.cancel:
         me = ((read_record() or {}).get("sessions") or {}).get(args.name) or {}
         lpid = me.get("lpid")
@@ -1855,4 +1907,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # 出力を書き出してから、すぐに終わる。音の入出力の後始末が固まっていても、プログラムを残さない
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    finally:
+        os._exit(code or 0)
