@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | release | end | notify | captions on|off
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | release | end | notify | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -185,6 +185,13 @@ case "${1:-}" in
     # 一言のために長く待たない。ほかのセッションが話していて順番が来なければ、読み上げずに戻る
     exec "$PY" "$(dirname "$0")/listen.py" --no-reply --wait 20 --say "$1"
     ;;
+  mic)
+    # 聞き取りに使うマイクを選ぶ(全セッションで共通)。builtin: Mac 本体のマイク。default: 既定の入力(イヤホンなど)。
+    case "${2:-}" in
+      builtin|default) exec "$PY" "$(dirname "$0")/listen.py" --mic "$2" ;;
+      *) echo "使い方: $0 mic builtin | default" >&2; exit 2 ;;
+    esac
+    ;;
   yomi)
     # 読みがなを登録する。字幕には表記のまま出し、声では読みで読む。利用者の表(Mac の中だけ)に書く。
     [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "使い方: $0 yomi '表記' '読み'" >&2; exit 2; }
@@ -216,7 +223,7 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "使い方: $0 on | off | status | listen [引数] | say '文' | yomi '表記' '読み' | release | end | notify | captions on|off" >&2
+    echo "使い方: $0 on | off | status | listen [引数] | say '文' | yomi '表記' '読み' | mic builtin|default | release | end | notify | captions on|off" >&2
     exit 2
     ;;
 esac

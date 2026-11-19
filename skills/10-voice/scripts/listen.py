@@ -72,6 +72,7 @@ CUE_MISS = "/System/Library/Sounds/Funk.aiff"  # キーを押して話したの�
 # Bluetooth のイヤホンは、マイクを開いた直後に通話用の接続へ切り替わり、
 # その間の約 1 秒は音が出ない。音声が届き始めてからこの秒数を待って音を出す
 KEY_WARMUP_S = 1.0   # キーの方式で、キーを押してから合図を鳴らすまでの秒数(短すぎると、話し始めが欠ける)
+BUILTIN_WARMUP_S = 0.3   # Mac 本体のマイクを使うときの待ち(通話用の接続への切り替えがないので、短くてよい)
 WARMUP_S = 1.5
 CUE_START = "/System/Library/Sounds/Ping.aiff"
 CUE_END = "/System/Library/Sounds/Glass.aiff"
@@ -199,7 +200,7 @@ def sessions_update(name: str, state: str | None = None) -> dict:
                 data = {}
             if data.get("boot") != boot_id() or not isinstance(data.get("sessions"), dict):
                 # Mac を起動し直した。セッションの記録は捨て、方式と速さの選択は引き継ぐ
-                keep = {k: data[k] for k in ("mode", "speed") if k in data}
+                keep = {k: data[k] for k in ("mode", "speed", "mic") if k in data}
                 data = {"boot": boot_id(), "sessions": {}, **keep}
             me = data["sessions"].setdefault(name, {"lane": "normal", "state": "", "t": 0})
             if me.get("lane") not in LANES:
@@ -413,6 +414,28 @@ def key_down() -> bool:
     return bool(cg.CGEventSourceKeyState(0, TALK_KEY)) or bool(cg.CGEventSourceFlagsState(0) & TALK_KEY_FLAG)
 
 
+def input_device():
+    """聞き取りに使うマイク。設定が builtin なら、Mac 本体のマイクの番号。それ以外は None(既定の入力)。
+
+    Bluetooth のイヤホンのマイクは、通話用の粗い音(16kHz)で、開くたびにイヤホンが通話用の接続に切り替わる。
+    Mac 本体のマイクを使うと、音がきれいで、切り替えの待ちも、読み上げの音質の低下もない。
+    読み上げは、どちらの場合も、既定の出力(イヤホン)から出る。
+    """
+    rec = read_record() or {}
+    if rec.get("mic") != "builtin":
+        return None
+    try:
+        import sounddevice as sd
+
+        for i, d in enumerate(sd.query_devices()):
+            name = d.get("name", "")
+            if d.get("max_input_channels", 0) > 0 and ("MacBook" in name or "Built-in" in name or "内蔵" in name):
+                return i
+    except Exception:
+        pass
+    return None  # 見つからなければ、既定の入力を使う
+
+
 def mic_closed() -> None:
     """マイクを閉じた時刻を残す(どのセッションの読み上げも、これを見て少し待つ)。"""
     try:
@@ -454,14 +477,58 @@ def to_wav(pcm: bytes) -> bytes:
     return buf.getvalue()
 
 
+# 無音や雑音を、音声認識が決まった言い回しにしてしまうことがある(動画の締めの挨拶など)。
+# 区切りの全体がこれらに一致したら、聞こえなかったものとして捨てる
+HALLUCINATIONS = (
+    "ご視聴ありがとうございました", "ご視聴ありがとうございます", "ご清聴ありがとうございました",
+    "最後までご視聴いただきありがとうございました", "最後までご視聴ありがとうございました",
+    "チャンネル登録お願いします", "チャンネル登録をお願いします", "おやすみなさい", "字幕視聴ありがとうございました",
+)
+PROMPT_MAX_WORDS = 60   # 音声認識に教える語の上限(教えすぎると、効き目が落ちる)
+_prompt: list[str] = []
+
+
+def whisper_prompt() -> str:
+    """音声認識に、あらかじめ教える語の並び。固有名詞の聞き間違いを減らす。
+
+    教えるのは、利用者の読みがなの表の表記、音声で会話中のセッションの名前、共通の読みがなの表の表記。
+    利用者の語を先に並べる。Mac 内の Whisper に渡すだけで、外へは出ない。
+    """
+    if not _prompt:
+        words: list[str] = []
+
+        def take(path: str) -> None:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    for line in f:
+                        if not line.startswith("#") and "\t" in line:
+                            w = line.split("\t")[0].strip()
+                            if w and w not in words:
+                                words.append(w)
+            except OSError:
+                pass
+
+        take(YOMI_USER_PATH)
+        for name in ((read_record() or {}).get("sessions") or {}):
+            if name not in words:
+                words.append(name)
+        take(YOMI_PATH)
+        _prompt.append("、".join(words[:PROMPT_MAX_WORDS]) + "。" if words else "")
+    return _prompt[0]
+
+
 def transcribe(client: httpx.Client, pcm: bytes) -> str:
-    r = client.post(
-        WHISPER_URL,
-        files={"file": ("segment.wav", to_wav(pcm), "audio/wav")},
-        data={"model": "whisper-1", "language": "ja", "response_format": "json"},
-    )
+    data = {"model": "whisper-1", "language": "ja", "response_format": "json"}
+    prompt = whisper_prompt()
+    if prompt:
+        data["prompt"] = prompt
+    r = client.post(WHISPER_URL, files={"file": ("segment.wav", to_wav(pcm), "audio/wav")}, data=data)
     r.raise_for_status()
-    return " ".join(r.json().get("text", "").split())
+    text = " ".join(r.json().get("text", "").split())
+    bare = re.sub(rf"[{BOUNDARY}]", "", text)
+    if bare in HALLUCINATIONS or (prompt and bare == re.sub(rf"[{BOUNDARY}]", "", prompt)):
+        return ""  # 決まった聞き間違い、または、教えた語の並びがそのまま返ってきた
+    return text
 
 
 # 読みがな。字幕にはふつうの表記で出し、声では読みで読む。
@@ -555,6 +622,21 @@ def yomi_add(word: str, reading: str) -> int:
         f.write("\n".join(kept) + "\n")
     print(f"読みがなを登録しました: {word} → {reading}(全セッションで、次の読み上げから効きます)")
     return 0
+
+
+def record_set(key: str, value) -> None:
+    """セッションの記録に、全セッション共通の設定を 1 つ書く。"""
+    fd = os.open(SESSIONS_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            data = json.loads(f.read() or "{}")
+        except ValueError:
+            data = {}
+        data[key] = value
+        f.seek(0)
+        f.truncate()
+        f.write(json.dumps(data, ensure_ascii=False))
 
 
 def read_record() -> dict | None:
@@ -816,8 +898,10 @@ def mic_frames(stop: threading.Event, on_ready):
     def callback(indata, frames, time_info, status):
         q.put(bytes(indata))
 
+    device = input_device()
+    warmup = WARMUP_S if device is None else BUILTIN_WARMUP_S
     try:
-        with sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback):
+        with sd.RawInputStream(device=device, samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback):
             buf = b""
             received = 0
             ready = False
@@ -828,14 +912,15 @@ def mic_frames(stop: threading.Event, on_ready):
                     continue
                 buf += chunk
                 received += len(chunk)
-                if not ready and received >= WARMUP_S * RATE * 2:
+                if not ready and received >= warmup * RATE * 2:
                     ready = True
                     on_ready()
                 while len(buf) >= FRAME_BYTES:
                     yield buf[:FRAME_BYTES]
                     buf = buf[FRAME_BYTES:]
     finally:
-        mic_closed()
+        if device is None:
+            mic_closed()  # イヤホンのマイクを閉じた。接続が戻るまで、読み上げを少し待たせる
 
 
 def key_frames(stop: threading.Event, on_ready):
@@ -857,7 +942,9 @@ def key_frames(stop: threading.Event, on_ready):
         def callback(indata, frames, time_info, status):
             q.put(bytes(indata))
 
-        stream = sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback)
+        device = input_device()
+        warmup = KEY_WARMUP_S if device is None else BUILTIN_WARMUP_S
+        stream = sd.RawInputStream(device=device, samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1, callback=callback)
         stream.start()
         try:
             buf = b""
@@ -871,7 +958,7 @@ def key_frames(stop: threading.Event, on_ready):
                     continue
                 buf += chunk
                 received += len(chunk)
-                if not ready and received >= KEY_WARMUP_S * RATE * 2:
+                if not ready and received >= warmup * RATE * 2:
                     ready = True
                     buf = b""  # 合図より前の音は捨てる
                     on_ready()
@@ -885,7 +972,8 @@ def key_frames(stop: threading.Event, on_ready):
             # 聞き取りを途中でやめたときも、ここでマイクを閉じる
             stream.stop()
             stream.close()
-            mic_closed()
+            if device is None:
+                mic_closed()
 
 
 def file_frames(path: str, stop: threading.Event):
@@ -1092,6 +1180,7 @@ def main() -> int:
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")
     ap.add_argument("--yomi", nargs=2, metavar=("表記", "読み"), help="利用者の読みがなの表に、表記と読みを足す(同じ表記があれば書き換える)")
+    ap.add_argument("--mic", choices=("builtin", "default"), help="聞き取りに使うマイクを選ぶ。builtin: Mac 本体のマイク。default: 既定の入力(イヤホンなど)。全セッションで共通")
     ap.add_argument("--print-mode", action="store_true", help="いま選ばれている聞き取りの方式を表示する(voice.sh on と status が呼ぶ)")
     ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
     ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
@@ -1106,9 +1195,16 @@ def main() -> int:
         return memo_watch()
     if args.yomi:
         return yomi_add(args.yomi[0], args.yomi[1])
-    if args.print_mode:
+    if args.mic:
+        record_set("mic", args.mic)
+    if args.print_mode or args.mic:
         print("方式: キーを押している間だけ聞く(右コマンド)" if listen_mode() == "key"
               else "方式: 「以上」と言うまで聞く(マイクは開いたまま)")
+        if (read_record() or {}).get("mic") == "builtin":
+            print("マイク: Mac 本体のマイク" if input_device() is not None
+                  else "マイク: Mac 本体のマイクが見つからないので、既定の入力を使います")
+        else:
+            print("マイク: 既定の入力(イヤホンなど)")
         return 0
     if args.unmute:
         if sessions_update(args.name).get(args.name, {}).get("state") == "muted":
