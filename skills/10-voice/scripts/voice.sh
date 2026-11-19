@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | notify | stop-check | captions on|off
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -204,6 +204,11 @@ case "${1:-}" in
     shift
     exec "$PY" "$(dirname "$0")/listen.py" --yomi "$@"   # 表記、読み、(あれば)聞き間違い
     ;;
+  cancel)
+    # このセッションの、動いている聞き取り(バックグラウンドで待っているものを含む)を止める。
+    [ -x "$PY" ] || exit 0
+    exec "$PY" "$(dirname "$0")/listen.py" --cancel
+    ;;
   stop-check)
     # Claude Code の hook(Stop)から呼ぶ。音声会話の途中で、聞き取りを呼ばずにターンを終えようとしたら、引き止める。
     [ -x "$PY" ] || exit 0
@@ -234,7 +239,7 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "使い方: $0 on | off | status | listen [引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | notify | stop-check | captions on|off" >&2
+    echo "使い方: $0 on | off | status | listen [引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off" >&2
     exit 2
     ;;
 esac

@@ -304,6 +304,9 @@ def write_floor(f, name: str, active: bool) -> None:
     f.flush()
 
 
+_cancelled = threading.Event()  # 止める指示(SIGTERM、SIGINT)を受けた
+
+
 def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S):
     """順番を取る。戻り値は (ロックのファイル, 直前に使ったのが別のセッションか, 待った秒数)。
 
@@ -334,7 +337,7 @@ def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S):
             fcntl.flock(f, fcntl.LOCK_UN)
         except OSError:
             pass
-        if time.time() - start >= wait_s:
+        if time.time() - start >= wait_s or _cancelled.is_set():
             f.close()
             return None, False, time.time() - start
         time.sleep(0.3)
@@ -1384,6 +1387,7 @@ def main() -> int:
     ap.add_argument("--mic", choices=("builtin", "default"), help="聞き取りに使うマイクを選ぶ。builtin: Mac 本体のマイク。default: 既定の入力(イヤホンなど)。全セッションで共通")
     ap.add_argument("--print-mode", action="store_true", help="いま選ばれている聞き取りの方式を表示する(voice.sh on と status が呼ぶ)")
     ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
+    ap.add_argument("--cancel", action="store_true", help="このセッションの、動いている聞き取り(バックグラウンドで待っているものを含む)を止める")
     ap.add_argument("--stop-check", action="store_true", help="hook 用。音声会話の途中で、聞き取りを呼ばずにターンを終えようとしたら、引き止める")
     ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
     ap.add_argument("--memo-watch", action="store_true", help="Claude の作業中に、キーを押して話したメモを預かる見張りとして動く(voice.sh on が起動する)")
@@ -1395,6 +1399,15 @@ def main() -> int:
         return notify()
     if args.stop_check:
         return stop_check()
+    if args.cancel:
+        me = ((read_record() or {}).get("sessions") or {}).get(args.name) or {}
+        lpid = me.get("lpid")
+        if lpid and lpid != os.getpid() and pid_alive(lpid):
+            os.kill(int(lpid), signal.SIGTERM)
+            print("聞き取りを止めました")
+        else:
+            print("動いている聞き取りは、ありません")
+        return 0
     if args.memo_watch:
         return memo_watch()
     if args.yomi:
@@ -1515,6 +1528,7 @@ def main() -> int:
     def on_signal(signum, frame):
         state["reason"] = state["reason"] or "interrupted"
         stop.set()
+        _cancelled.set()
 
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
@@ -1528,6 +1542,10 @@ def main() -> int:
             print("[ミュート: 利用者がミュートにしています。読み上げていません。声で呼びかけず、画面に「再開するときは /10-voice と入力してください」と書いて待ってください。利用者が再開を頼んだら、voice.sh on を実行してから聞き取りを始めます]")
             return 0
         lock, switched, waited = acquire_turn(args.name, args.wait)
+        if lock is None and _cancelled.is_set():
+            sessions_update(args.name, "working")
+            print("[中断されました]")
+            return 0
         if lock is None:
             print("[順番待ち: まだ話せません(ほかのセッションが会話中、利用者が別のセッションを話す相手に選んでいる、このセッションが「あとで」に置かれている、停止ボタンが押されている、のいずれか)。読み上げていません]")
             return 0
