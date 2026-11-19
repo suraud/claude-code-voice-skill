@@ -275,9 +275,31 @@ def caption(name: str, who: str, text: str) -> None:
         pass
 
 
+def project_dir() -> str:
+    """Claude Code を始めたフォルダ。コマンドの途中で別のフォルダへ移っていても、変わらない。
+
+    シェルの作業フォルダを使うと、下の階層へ移ったときに、セッションの名前が変わってしまう。
+    Claude Code が渡す環境変数から調べ、分からなければ、いまの作業フォルダを使う。
+    """
+    d = os.environ.get("CLAUDE_PROJECT_DIR")
+    if d:
+        return d
+    pid = os.environ.get("CLAUDE_PID", "")
+    if pid.isdigit():
+        try:
+            out = subprocess.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                if line.startswith("n/"):
+                    return line[1:]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return os.getcwd()
+
+
 def session_name(path: str | None = None) -> str:
-    """作業フォルダの名前から、先頭の番号と記号を除いたもの(例: 10_設計 → 設計)。"""
-    base = os.path.basename((path or os.getcwd()).rstrip("/"))
+    """Claude Code を始めたフォルダの名前から、先頭の番号と記号を除いたもの(例: 10_設計 → 設計)。"""
+    base = os.path.basename((path or project_dir()).rstrip("/"))
     return re.sub(r"^[\d_\-\s]+", "", base) or base
 
 
@@ -456,7 +478,9 @@ def notify() -> int:
         data = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         data = {}
-    name = session_name(data.get("cwd") if isinstance(data, dict) else None)
+    # hook には CLAUDE_PROJECT_DIR が渡る。なければ、JSON の作業フォルダを使う
+    hook_cwd = data.get("cwd") if isinstance(data, dict) else None
+    name = session_name(os.environ.get("CLAUDE_PROJECT_DIR") or hook_cwd)
 
     def current():
         """このセッションの記録。話してはいけない状態なら None。"""
