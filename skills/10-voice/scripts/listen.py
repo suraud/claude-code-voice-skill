@@ -1004,16 +1004,22 @@ def main() -> int:
             session_end(args.name)
         return 0
 
+    # 方式は、全セッションで共通。字幕の窓のボタンで切り替える。聞き取りの途中で切り替えられたら、その場で従う
+    follow_mode = args.mode is None and not args.file
     if args.mode is None:
-        args.mode = listen_mode()  # 方式は、全セッションで共通。字幕の窓のボタンで切り替える
+        args.mode = listen_mode()
     key_mode = args.mode == "key" and not args.file
     key_note = ""
-    if key_mode:
+    key_ok = True
+    if key_mode or follow_mode:
         try:
             key_down()
         except (OSError, AttributeError) as e:
+            key_ok = False
+            follow_mode = False
+        if key_mode and not key_ok:
             key_mode = False
-            key_note = f"[キーの状態を調べられないため、「{args.end_word}」で終える方式で聞き取りました({type(e).__name__})]"
+            key_note = f"[キーの状態を調べられないため、「{args.end_word}」で終える方式で聞き取りました]"
     pattern = end_pattern(args.end_word)
     vad = webrtcvad.Vad(3)
     stop = threading.Event()
@@ -1103,23 +1109,43 @@ def main() -> int:
     lead = len(say) - len(args.say) if say and args.say else 0  # 名乗りを足した分
     speaker = Speaker(say, args.name, stop_on_key=key_mode, lead=lead) if say and not from_file else None
 
-    def on_ready() -> None:
-        if speaker:
+    mode_box = {"key": key_mode}   # 音声の取り込み(下の frames)に、いまの方式を伝える
+    started = {"speaker": False}
+
+    def start_speaker() -> None:
+        if speaker and not started["speaker"]:
+            started["speaker"] = True
             caption(args.name, "Claude", args.say)
             speaker.start()
-        else:
+
+    def on_ready() -> None:
+        # 合言葉の方式で、マイクが開いた。読み上げがまだなら始める。読み上げ中でなければ、合図を鳴らす
+        if speaker and not started["speaker"]:
+            start_speaker()
+        elif not (speaker and not speaker.done.is_set()):
             play(CUE_START)
+
+    def live_frames():
+        """いまの方式で音声を取り込む。方式が切り替えられたら、取り込み方を入れ替える。"""
+        while not stop.is_set():
+            mine = mode_box["key"]
+            inner = threading.Event()
+            source = key_frames(inner, lambda: play(CUE_START)) if mine else mic_frames(inner, on_ready)
+            try:
+                for frame in source:
+                    yield frame
+                    if stop.is_set() or mode_box["key"] != mine:
+                        break
+            finally:
+                inner.set()
+                source.close()
 
     if from_file:
         frames = file_frames(args.file, stop)
-    elif key_mode:
-        # キーの方式では、マイクを開かずに読み上げを始める。マイクは、キーが押されたときだけ開く
-        if speaker:
-            caption(args.name, "Claude", args.say)
-            speaker.start()
-        frames = key_frames(stop, lambda: play(CUE_START))
     else:
-        frames = mic_frames(stop, on_ready)
+        if key_mode:
+            start_speaker()  # キーの方式では、マイクを開かずに読み上げを始める。マイクは、キーが押されたときだけ開く
+        frames = live_frames()
 
     recent = collections.deque(maxlen=START_WINDOW)
     preroll = collections.deque(maxlen=PREROLL_FRAMES)
@@ -1240,6 +1266,18 @@ def main() -> int:
             if _flags["paused"]:
                 state["reason"] = state["reason"] or "paused"
                 break
+            if follow_mode and (listen_mode() == "key") != key_mode and not talking:
+                # 字幕の窓で、方式が切り替えられた。その場で従う。話している途中の分は、ここまでで文字にする
+                if in_speech:
+                    cut()
+                key_mode = not key_mode
+                mode_box["key"] = key_mode
+                if speaker:
+                    speaker.stop_on_key = key_mode
+                in_speech, release_run, since_voice = False, 0, 0.0
+                recent.clear()
+                preroll.clear()
+                state["memo_hold"] = False
             if _flags["focus"] and _flags["focus"] != args.name and not talking:
                 # 利用者が、別のセッションを話す相手に選んだ。読み上げも聞き取りもやめて、順番をゆずる
                 state["reason"] = state["reason"] or "yield"
