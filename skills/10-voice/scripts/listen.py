@@ -417,7 +417,8 @@ def key_down() -> bool:
 
 
 KEY_SETTLE_S = 0.15   # キーが、この秒数、単独で押され続けたら「話すために押した」とみなす
-_hold = {"since": 0.0, "chord": False}
+BARGE_SETTLE_S = 0.5  # 読み上げ中は、長めに待つ。⌘ と数字のようなショートカットで、読み上げを止めないため
+_hold = {"since": 0.0, "chord": False, "settle": KEY_SETTLE_S}
 
 
 def talk_held() -> bool:
@@ -439,7 +440,7 @@ def talk_held() -> bool:
             _hold["chord"] = True
     if _hold["chord"]:
         return False
-    return now - _hold["since"] >= KEY_SETTLE_S
+    return now - _hold["since"] >= _hold["settle"]
 
 
 def input_device():
@@ -831,6 +832,7 @@ class Speaker:
         self.seek_seen = self._seek_stamp()
         self.first_heard: str | None = None  # 最初の再生で伝わった範囲(読み直しでは変えない)
         self.pending: int | None = None      # 止められた所から読み上げを続ける、という指示(バイト位置)
+        self.playing = False                 # いま、音を出しているか
         threading.Thread(target=self._synth, daemon=True).start()
 
     def _request(self, text: str, speed: float) -> bytes:
@@ -943,6 +945,13 @@ class Speaker:
         """位置 i から最後まで再生する。止める指示、つまみ、速さの変更に、0.05 秒ごとに応じる。"""
         step = KOKORO_RATE // 20 * 2
         checked = 0.0
+        self.playing = True
+        try:
+            self._run_loop(out, i, first, step, checked)
+        finally:
+            self.playing = False
+
+    def _run_loop(self, out, i: int, first: bool, step: int, checked: float) -> None:
         while i < len(self.pcm):
             if self.closed.is_set() or (first and self.cancel.is_set()):
                 out.abort()
@@ -1553,6 +1562,8 @@ def main() -> int:
         total_ticks += 1
         elapsed += FRAME_S
         if key_mode:
+            # 読み上げ中は、キーを長めに押したときだけ、話すための操作とみなす
+            _hold["settle"] = BARGE_SETTLE_S if speaker and speaker.playing else KEY_SETTLE_S
             down = talk_held()
             if frame is not None:
                 # マイクが開き、合図が鳴ったあとの音声。ここから録る(声の判定を待つと、話し始めが欠ける)
