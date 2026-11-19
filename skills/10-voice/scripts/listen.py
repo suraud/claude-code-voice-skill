@@ -1381,6 +1381,7 @@ def memo_watch() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="読み上げてから、合言葉が聞こえるまで聞き続け、文字にして出力する")
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
+    ap.add_argument("--open", action="append", default=[], metavar="パス", help="読み上げを始めるときに開くファイルや URL(何回でも指定できる)。順番を待っている間は開かない。ほかのセッションと話している利用者の画面を、切り替えないため")
     ap.add_argument("--no-reply", action="store_true", help="読み上げるだけで、聞き取らずに終わる。順番も手放す(返事のいらない一言に使う。voice.sh say が付ける)")
     ap.add_argument("--name", default=session_name(), help="このセッションの呼び名(既定: 作業フォルダの名前)")
     ap.add_argument("--mode", choices=("key", "word"), default=None, help="聞き取りの方式。key: キーを押している間だけ聞く。word: 合言葉が聞こえるまで聞く。指定しなければ、字幕の窓で選ばれている方式(選ばれていなければ key)。検証のとき以外は指定しない")
@@ -1570,7 +1571,17 @@ def main() -> int:
     mode_box = {"key": key_mode}   # 音声の取り込み(下の frames)に、いまの方式を伝える
     started = {"speaker": False}
 
+    def open_files() -> None:
+        # 見せたいファイルは、このセッションの番が来て、読み上げを始めるときに開く
+        for path in args.open:
+            try:
+                subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+        args.open = []
+
     def start_speaker() -> None:
+        open_files()
         if speaker and not started["speaker"]:
             started["speaker"] = True
             caption(args.name, "Claude", shown_say)  # 字幕には、ふつうの表記で出す
@@ -1603,6 +1614,8 @@ def main() -> int:
     else:
         if key_mode:
             start_speaker()  # キーの方式では、マイクを開かずに読み上げを始める。マイクは、キーが押されたときだけ開く
+        elif not speaker:
+            open_files()
         frames = live_frames()
 
     recent = collections.deque(maxlen=START_WINDOW)

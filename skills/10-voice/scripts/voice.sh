@@ -183,7 +183,8 @@ case "${1:-}" in
     [ -n "${1:-}" ] || { echo "使い方: $0 say '読み上げる文'" >&2; exit 2; }
     up "$KOKORO_URL" || die "Kokoro が起動していません。先に '$0 on' を実行してください"
     # 一言のために長く待たない。ほかのセッションが話していて順番が来なければ、読み上げずに戻る
-    exec "$PY" "$(dirname "$0")/listen.py" --no-reply --wait 20 --say "$1"
+    text="$1"; shift
+    exec "$PY" "$(dirname "$0")/listen.py" --no-reply --wait 20 --say "$text" "$@"   # 続けて --open パス を付けられる
     ;;
   review)
     # 話し方の分析のために、1 日分の会話の文字から、利用者の発言と数の集計を取り出す(日付を省くと今日)。
