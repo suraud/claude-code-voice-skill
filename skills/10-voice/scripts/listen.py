@@ -77,6 +77,7 @@ CUE_END = "/System/Library/Sounds/Glass.aiff"
 # 複数のセッションで同時に使うときの順番待ち。ロックを持つセッションだけが話して聞く。
 # ロックはプロセスが終わると自動で外れる。ファイルには、最後に使ったセッションの名前だけを書く
 LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice.lock")
+SPEAK_LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice-speak.lock")  # 読み上げの間だけ持つ。声を重ねないため
 LOCK_WAIT_S = 420    # 順番を待つ上限。超えたら、読み上げずに戻る
 MIN_LISTEN_S = 120   # 長く待ったあとでも、聞き取りに使える最低限の秒数
 FLOOR_HOLD_S = 120   # 時間切れのあと、同じセッションが聞き取りを再開するまで順番を取っておく秒数
@@ -269,9 +270,9 @@ def caption(name: str, who: str, text: str) -> None:
         pass
 
 
-def session_name() -> str:
+def session_name(path: str | None = None) -> str:
     """作業フォルダの名前から、先頭の番号と記号を除いたもの(例: 10_設計 → 設計)。"""
-    base = os.path.basename(os.getcwd())
+    base = os.path.basename((path or os.getcwd()).rstrip("/"))
     return re.sub(r"^[\d_\-\s]+", "", base) or base
 
 
@@ -370,7 +371,20 @@ class Speaker:
             if self.error or self.cancel.is_set():
                 return
             step = KOKORO_RATE // 20 * 2  # 0.05 秒ずつ書き、止める指示にすぐ応じる
-            with sd.RawOutputStream(samplerate=KOKORO_RATE, channels=1, dtype="int16") as out:
+            # ほかの読み上げ(別のセッションの確認待ちの知らせなど)が終わるのを待つ
+            speak_lock = open(SPEAK_LOCK_PATH, "a+", encoding="utf-8")
+            os.chmod(SPEAK_LOCK_PATH, 0o600)
+            waited = 0.0
+            while waited < 60:
+                try:
+                    fcntl.flock(speak_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if self.cancel.is_set():
+                        return
+                    time.sleep(0.2)
+                    waited += 0.2
+            with speak_lock, sd.RawOutputStream(samplerate=KOKORO_RATE, channels=1, dtype="int16") as out:
                 for i in range(0, len(self.pcm), step):
                     if self.cancel.is_set():
                         out.abort()
@@ -421,6 +435,71 @@ def file_frames(path: str, stop: threading.Event):
             yield frame
 
 
+NOTIFY_WAIT_S = 600  # 確認待ちの知らせで、順番を待つ上限
+
+
+def notify() -> int:
+    """Claude Code の hook から呼ばれる。実行の確認が画面に出たことを、声で知らせる。
+
+    標準入力の JSON から作業フォルダを読む。そのセッションが音声で会話中のときだけ話す。
+    停止ボタンが押されている、後回しに置かれている、ミュート中のときは、黙っている。
+    待機中のセッションが話しかけるときと同じ順番待ちをする。ほかのセッションの読み上げと、
+    それに続く利用者の発言が終わってから話す。マイクは開かず、利用者の番にも触れない。
+    """
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        data = {}
+    name = session_name(data.get("cwd") if isinstance(data, dict) else None)
+
+    def current():
+        """このセッションの記録。話してはいけない状態なら None。"""
+        try:
+            with open(SESSIONS_PATH, encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            return None
+        me = rec.get("sessions", {}).get(name) if isinstance(rec.get("sessions"), dict) else None
+        if rec.get("boot") != boot_id() or rec.get("paused") or not me:
+            return None
+        if me.get("lane") == "later" or me.get("state") == "muted":
+            return None
+        return me.get("state"), me.get("t")
+
+    before = current()
+    if before is None:
+        return 0
+    text = f"{name}、確認待ちです。画面を見てください。"
+    speaker = Speaker(text)
+    try:
+        lock = open(LOCK_PATH, "a+", encoding="utf-8")
+    except OSError:
+        return 0
+    start = time.time()
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            holder, last, active = read_floor(lock)
+            if not (holder and holder != name and active and time.time() - last < FLOOR_HOLD_S):
+                break  # 順番が空いた。話している間は持ち続け、ほかのセッションを待たせる
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        if time.time() - start >= NOTIFY_WAIT_S:
+            return 0
+        time.sleep(0.3)
+    # 待っている間に、このセッションが次の会話へ進んでいたら、確認はもう済んでいる。知らせない
+    if current() != before:
+        return 0
+    caption(name, "Claude", text)
+    speaker.start()
+    speaker.done.wait(120)
+    if speaker.error:
+        play(CUE_MISS)
+        time.sleep(1)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="読み上げてから、合言葉が聞こえるまで聞き続け、文字にして出力する")
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
@@ -431,10 +510,13 @@ def main() -> int:
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")
+    ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
     ap.add_argument("--file", help="検証用。マイクの代わりに WAV ファイルを読む")
     ap.add_argument("--verbose", action="store_true", help="区切りごとの認識結果を標準エラーに出す")
     args = ap.parse_args()
 
+    if args.notify:
+        return notify()
     if args.release or args.end:
         release_turn(args.name)
         if args.end:

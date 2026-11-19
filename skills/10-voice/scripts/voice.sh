@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | release | end | captions on|off
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | release | end | notify | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -143,11 +143,18 @@ case "${1:-}" in
     status_one kokoro "$KOKORO_URL" 8880
     ;;
   listen)
-    # 合言葉(既定は「以上」)が聞こえるまで聞き続け、文字にして出力する。
+    # 読み上げてから、利用者の発言を聞き取り、文字にして出力する(キーを押している間だけ聞く。--mode word で合言葉の方式)。
     shift
     [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
     up "$WHISPER_URL" || die "Whisper が起動していません。先に '$0 on' を実行してください"
     exec "$PY" "$(dirname "$0")/listen.py" "$@"
+    ;;
+  notify)
+    # Claude Code の hook から呼ぶ。実行の確認が画面に出たことを、音声で会話中のセッションに限って声で知らせる。
+    # 標準入力の JSON(作業フォルダを含む)を、そのまま渡す。サービスが止まっていれば、何もしない。
+    [ -x "$PY" ] || exit 0
+    up "$KOKORO_URL" || exit 0
+    exec "$PY" "$(dirname "$0")/listen.py" --notify
     ;;
   release)
     # 時間切れのあとに持ち続けている順番を手放す。ほかのセッションが、待たずに話せるようになる。
