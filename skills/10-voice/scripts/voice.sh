@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | release | end | notify | captions on|off
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | release | end | notify | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -167,7 +167,7 @@ case "${1:-}" in
   status)
     status_one whisper "$WHISPER_URL" 2022
     status_one kokoro "$KOKORO_URL" 8880
-    [ -x "$PY" ] && "$PY" "$(dirname "$0")/listen.py" --print-mode 2>/dev/null
+    if [ -x "$PY" ]; then "$PY" "$(dirname "$0")/listen.py" --print-mode 2>/dev/null; fi
     ;;
   listen)
     # 読み上げてから、利用者の発言を聞き取り、文字にして出力する(キーを押している間だけ聞く。--mode word で合言葉の方式)。
@@ -180,8 +180,16 @@ case "${1:-}" in
     # 返事のいらない一言を読み上げる。聞き取らずに終わり、順番を手放す(作業に入る前の一言など)。
     shift
     [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
+    [ -n "${1:-}" ] || { echo "使い方: $0 say '読み上げる文'" >&2; exit 2; }
     up "$KOKORO_URL" || die "Kokoro が起動していません。先に '$0 on' を実行してください"
-    exec "$PY" "$(dirname "$0")/listen.py" --no-reply --say "$1"
+    # 一言のために長く待たない。ほかのセッションが話していて順番が来なければ、読み上げずに戻る
+    exec "$PY" "$(dirname "$0")/listen.py" --no-reply --wait 20 --say "$1"
+    ;;
+  yomi)
+    # 読みがなを登録する。字幕には表記のまま出し、声では読みで読む。利用者の表(Mac の中だけ)に書く。
+    [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "使い方: $0 yomi '表記' '読み'" >&2; exit 2; }
+    [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
+    exec "$PY" "$(dirname "$0")/listen.py" --yomi "$2" "$3"
     ;;
   notify)
     # Claude Code の hook から呼ぶ。実行の確認が画面に出たことを、音声で会話中のセッションに限って声で知らせる。
@@ -208,7 +216,7 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "使い方: $0 on | off | status | listen | release | end | captions on|off" >&2
+    echo "使い方: $0 on | off | status | listen [引数] | say '文' | yomi '表記' '読み' | release | end | notify | captions on|off" >&2
     exit 2
     ;;
 esac

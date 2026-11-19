@@ -1,7 +1,7 @@
 """読み上げてから、利用者の発言を聞き取って文字にする。聞き取りの方式は 2 つある。
 
-- key(既定): キー(右コマンド)を押している間だけ聞く。離すと発言の終わり。
-  読み上げは、キーを押したときだけ止まる。押していない間の音は捨て、文字にしない
+- key(既定): キー(右コマンド)を押している間だけマイクを開いて聞く。離すと発言の終わり。
+  読み上げは、キーを押したときだけ止まる。押していない間は、マイクを閉じている
 - word: 合言葉(既定は「以上」)が聞こえるまで、マイクを閉じずに聞き続ける。
   読み上げ中に声が続いたら、読み上げを止める。キーボードに手が届かないときに使う
 
@@ -472,8 +472,9 @@ YOMI_USER_PATH = os.path.expanduser("~/.voicemode/10-voice-yomi.tsv")
 RUBY = re.compile(r"\{([^|{}]+)\|([^|{}]+)\}")
 
 
-def load_yomi() -> list[tuple[str, str]]:
-    table: dict[str, tuple[str, str]] = {}
+def load_yomi() -> dict[str, str]:
+    """読みがなの表を読む。「小文字にした表記 → 読み」を返す。"""
+    table: dict[str, str] = {}
     for path in (YOMI_PATH, YOMI_USER_PATH):  # あとから読むほう(利用者の表)が優先
         try:
             with open(path, encoding="utf-8") as f:
@@ -482,51 +483,113 @@ def load_yomi() -> list[tuple[str, str]]:
                         continue
                     word, reading = (x.strip() for x in line.rstrip("\n").split("\t")[:2])
                     if word and reading:
-                        table[word.lower()] = (word, reading)
+                        table[word.lower()] = reading
         except OSError:
             pass
-    return sorted(table.values(), key=lambda x: -len(x[0]))  # 長い表記を先に当てはめる
+    return table
 
 
-def split_say(text: str) -> tuple[str, str]:
-    """読み上げる文を、字幕に出す文と、声で読む文に分ける。"""
-    shown = RUBY.sub(lambda m: m.group(1), text)
-    parts = []  # {表記|読み} の読みは、表で置き換えない
-    pos = 0
+def split_say(text: str) -> tuple[str, str, list[tuple[int, int]]]:
+    """読み上げる文を、字幕に出す文と、声で読む文に分ける。
+
+    戻り値は (字幕の文, 声の文, 対応)。対応は、(声の文の文字位置, 字幕の文の文字位置) の並びで、
+    表記と読みの長さが違っても、声の位置から字幕の位置を求められるようにする
+    (「AWS」は 3 文字、「エーダブリューエス」は 9 文字)。
+    """
     table = load_yomi()
+    words = sorted(table, key=len, reverse=True)  # 長い表記を先に当てはめる
+    # 英数字の語の一部(例: 「AIR」の中の「AI」)には当てはめない
+    by_table = re.compile(
+        r"(?<![A-Za-z0-9])(?:" + "|".join(re.escape(w) for w in words) + r")(?![A-Za-z0-9])", re.IGNORECASE
+    ) if words else None
+    shown: list[str] = []
+    spoken: list[str] = []
+    points = [(0, 0)]
 
-    def by_table(chunk: str) -> str:
-        for word, reading in table:
-            # 英数字の語の一部(例: 「AIR」の中の「AI」)には当てはめない
-            chunk = re.sub(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])", reading, chunk, flags=re.IGNORECASE)
-        return chunk
+    def add(shown_piece: str, spoken_piece: str) -> None:
+        shown.append(shown_piece)
+        spoken.append(spoken_piece)
+        points.append((sum(map(len, spoken)), sum(map(len, shown))))
 
-    for m in RUBY.finditer(text):
-        parts.append(by_table(text[pos : m.start()]))
-        parts.append(m.group(2))
+    def plain(chunk: str) -> None:
+        pos = 0
+        for m in (by_table.finditer(chunk) if by_table else ()):
+            if m.start() > pos:
+                add(chunk[pos : m.start()], chunk[pos : m.start()])
+            add(m.group(0), table[m.group(0).lower()])
+            pos = m.end()
+        if pos < len(chunk):
+            add(chunk[pos:], chunk[pos:])
+
+    pos = 0
+    for m in RUBY.finditer(text):  # {表記|読み} の読みは、表で置き換えない
+        plain(text[pos : m.start()])
+        add(m.group(1), m.group(2))
         pos = m.end()
-    parts.append(by_table(text[pos:]))
-    return shown, "".join(parts)
+    plain(text[pos:])
+    return "".join(shown), "".join(spoken), points
 
 
-def listen_mode() -> str:
-    """字幕の窓で選ばれている、聞き取りの方式(key または word)。記録がなければ key。"""
+def to_shown(points: list[tuple[int, int]], n: int) -> int:
+    """声の文の n 文字目が、字幕の文の何文字目に当たるかを、対応から求める。"""
+    for (s0, d0), (s1, d1) in zip(points, points[1:]):
+        if n <= s1:
+            return d0 + round((d1 - d0) * (n - s0) / max(1, s1 - s0))
+    return points[-1][1]
+
+
+def yomi_add(word: str, reading: str) -> int:
+    """利用者の読みがなの表に、表記と読みを足す。同じ表記(大文字と小文字は区別しない)があれば書き換える。"""
+    word, reading = " ".join(word.split()), " ".join(reading.split())
+    if not word or not reading or "\t" in word + reading:
+        print("エラー: 表記と読みを指定してください", file=sys.stderr)
+        return 2
+    fd = os.open(YOMI_USER_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        lines = [line.rstrip("\n") for line in f]
+        kept = [line for line in lines if line.startswith("#") or line.split("\t")[0].strip().lower() != word.lower()]
+        kept.append(f"{word}\t{reading}")
+        f.seek(0)
+        f.truncate()
+        f.write("\n".join(kept) + "\n")
+    print(f"読みがなを登録しました: {word} → {reading}(全セッションで、次の読み上げから効きます)")
+    return 0
+
+
+def read_record() -> dict | None:
+    """セッションの記録を読む。読めなければ None。
+
+    書く側(sessions_update、字幕の窓)は、ロックを取って、中身を消してから書き直す。
+    ロックなしで読むと、書いている最中の空の中身を読んでしまうので、読む側もロックを取る。
+    """
     try:
         with open(SESSIONS_PATH, encoding="utf-8") as f:
-            mode = json.load(f).get("mode")
-        return mode if mode in ("key", "word") else "key"
+            fcntl.flock(f, fcntl.LOCK_SH)
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
     except (OSError, ValueError):
-        return "key"
+        return None
 
 
-def speech_speed() -> float:
-    """字幕の窓で選ばれている、読み上げの速さ。記録がなければ 1.0。"""
+def listen_mode(default: str = "key") -> str:
+    """字幕の窓で選ばれている、聞き取りの方式(key または word)。記録が読めなければ default。"""
+    rec = read_record()
+    if rec is None:
+        return default
+    return "word" if rec.get("mode") == "word" else "key"
+
+
+def speech_speed(default: float = 1.0) -> float:
+    """字幕の窓で選ばれている、読み上げの速さ。記録が読めなければ default。"""
+    rec = read_record()
+    if rec is None:
+        return default
     try:
-        with open(SESSIONS_PATH, encoding="utf-8") as f:
-            speed = float(json.load(f).get("speed", 1.0))
-        return speed if 0.5 <= speed <= 2.0 else 1.0
-    except (OSError, ValueError, TypeError):
+        speed = float(rec.get("speed", 1.0))
+    except (ValueError, TypeError):
         return 1.0
+    return speed if 0.5 <= speed <= 2.0 else 1.0
 
 
 class Speaker:
@@ -536,9 +599,11 @@ class Speaker:
     つまみを動かすと、その位置から読み直す。位置は PLAYBACK_PATH に書き、字幕の窓が表示する。
     """
 
-    def __init__(self, text: str, name: str = "", stop_on_key: bool = False, lead: int = 0):
-        self.text = text
-        self.lead = lead                 # 文の頭にある、字幕には出ない部分(名乗り)の文字数
+    def __init__(self, text: str, name: str = "", stop_on_key: bool = False,
+                 shown: str | None = None, points: list[tuple[int, int]] | None = None):
+        self.text = text                 # 声で読む文(読みがなに直したもの。名乗りを含む)
+        self.shown = text if shown is None else shown          # 字幕に出ている文
+        self.points = points or [(0, 0), (len(text), len(self.shown))]  # 声の文と字幕の文の、位置の対応
         self.name = name
         self.stop_on_key = stop_on_key   # 読み直しの途中でキーが押されたら止める(キーの方式)
         self.ready = threading.Event()   # 音声ができた(または失敗した)
@@ -580,7 +645,7 @@ class Speaker:
             return ""
         played = max(0, self.written - int(0.3 * KOKORO_RATE) * 2)  # 出力の遅れの分を引く
         n = int(len(self.text) * played / len(self.pcm))
-        head = self.text[:n]
+        head = self.shown[: to_shown(self.points, n)]  # 字幕に出した文(Claude が書いた表記)で返す
         cut_at = max(head.rfind(c) for c in "。、？！")
         return head[: cut_at + 1] if cut_at >= 0 else ""
 
@@ -620,10 +685,12 @@ class Speaker:
         try:
             total = len(self.pcm) / (KOKORO_RATE * 2) if self.pcm else 0.0
             # 再生に渡してから音が出るまでの遅れ(約 0.3 秒)を引いて、聞こえている位置を書く。
-            # pre は、名乗り(字幕に出ない部分)が全体に占める割合。字幕の色分けの位置を合わせるのに使う
+            # map は、音の位置(0〜1)と字幕の文の位置(0〜1)の対応。字幕の色分けの位置を合わせるのに使う
+            # (名乗りは字幕に出ない。表記と読みは長さが違う)
             heard = max(0, self.written - int(0.3 * KOKORO_RATE) * 2) if playing else self.written
             data = {"name": self.name, "pos": round(heard / (KOKORO_RATE * 2), 2), "dur": round(total, 2),
-                    "pre": round(self.lead / max(1, len(self.text)), 4),
+                    "map": [[round(a / max(1, len(self.text)), 4), round(b / max(1, len(self.shown)), 4)]
+                            for a, b in self.points],
                     "playing": playing, "active": active, "t": round(time.time(), 2)}
             fd = os.open(PLAYBACK_PATH + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -670,7 +737,7 @@ class Speaker:
                     # 右端まで動かされたら、そこで読み終える。それ以外は、手前の区切りから読み直す
                     i = self._align(1.0) if frac >= 0.995 else self._seek_start(frac)
                     self.written = min(i, len(self.pcm))
-                speed = speech_speed()
+                speed = speech_speed(self.speed)  # 記録が読めないときは、いまの速さのまま
                 if abs(speed - self.speed) > 0.01:
                     # 速さが変えられた。全体を新しい速さで作り直し、読み終えた文の切れ目から続ける
                     heard = len(self.heard_text()) / max(1, len(self.text))
@@ -1024,6 +1091,7 @@ def main() -> int:
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")
+    ap.add_argument("--yomi", nargs=2, metavar=("表記", "読み"), help="利用者の読みがなの表に、表記と読みを足す(同じ表記があれば書き換える)")
     ap.add_argument("--print-mode", action="store_true", help="いま選ばれている聞き取りの方式を表示する(voice.sh on と status が呼ぶ)")
     ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
     ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
@@ -1036,6 +1104,8 @@ def main() -> int:
         return notify()
     if args.memo_watch:
         return memo_watch()
+    if args.yomi:
+        return yomi_add(args.yomi[0], args.yomi[1])
     if args.print_mode:
         print("方式: キーを押している間だけ聞く(右コマンド)" if listen_mode() == "key"
               else "方式: 「以上」と言うまで聞く(マイクは開いたまま)")
@@ -1056,21 +1126,31 @@ def main() -> int:
         args.mode = listen_mode()
     key_mode = args.mode == "key" and not args.file
     key_note = ""
-    key_ok = True
-    if key_mode or follow_mode:
+    if not args.file:
         try:
             key_down()
-        except (OSError, AttributeError) as e:
-            key_ok = False
+            if args.no_reply:
+                # 返事のいらない一言は、方式によらず、マイクを開かずに読み上げる。止められるのはキーだけ
+                key_mode, follow_mode = True, False
+        except (OSError, AttributeError):
             follow_mode = False
-        if key_mode and not key_ok:
-            key_mode = False
-            key_note = f"[キーの状態を調べられないため、「{args.end_word}」で終える方式で聞き取りました]"
+            if key_mode:
+                key_mode = False
+                key_note = f"[キーの状態を調べられないため、「{args.end_word}」で終える方式で聞き取りました]"
     pattern = end_pattern(args.end_word)
     vad = webrtcvad.Vad(3)
     stop = threading.Event()
     texts: list[str] = []
-    state: dict = {"reason": None, "error": None, "memo_hold": False, "memo_count": 0}
+    state: dict = {"reason": None, "error": None, "memo_hold": False, "memo_count": 0, "memo_parts": []}
+
+    def memo_flush() -> None:
+        """キーを押している間に話されたメモを、1 件にまとめて預かる(息つぎで区切れても、分けない)。"""
+        parts, state["memo_parts"] = state["memo_parts"], []
+        body = " ".join(parts)
+        if body.strip():
+            memo_add(args.name, body)
+            caption(args.name, "メモ", body)
+            state["memo_count"] += 1
     jobs: queue.Queue = queue.Queue()
 
     def worker() -> None:
@@ -1101,9 +1181,9 @@ def main() -> int:
                         if ended:
                             body = body[: ended.start()]  # 「以上」はメモに入れない
                         if body.strip():
-                            memo_add(args.name, body)
-                            caption(args.name, "メモ", body)
-                            state["memo_count"] += 1
+                            state["memo_parts"].append(body)
+                        if not key_mode:
+                            memo_flush()  # 合言葉の方式では、区切りごとに預かる
                         if ended and not key_mode:
                             # 合言葉の方式では、メモのあとの「以上」でも話し終わりにする
                             state["reason"] = "end-word"
@@ -1138,7 +1218,7 @@ def main() -> int:
 
     from_file = bool(args.file)
     lock = None
-    shown_say, say = split_say(args.say) if args.say else (None, None)
+    shown_say, say, points = split_say(args.say) if args.say else (None, None, [])
     if not from_file:
         if sessions_update(args.name).get(args.name, {}).get("state") == "muted":
             # 利用者がミュートにしている(聞き取り中、または作業中に「ミュート」と言った)。話しかけない
@@ -1150,11 +1230,12 @@ def main() -> int:
             return 0
         if args.wait <= LOCK_WAIT_S:  # 長く待つ指定(バックグラウンド)のときは、コマンドの制限時間を気にしない
             args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
-        spoken = say
         if switched and say:
-            say = f"{args.name}、からです。{say}"  # 別のセッションから切り替わったときは名乗る
-    lead = len(say) - len(spoken) if say and not from_file else 0  # 名乗りを足した分
-    speaker = Speaker(say, args.name, stop_on_key=key_mode, lead=lead) if say and not from_file else None
+            lead = f"{args.name}、からです。"  # 別のセッションから切り替わったときは名乗る。字幕には出さない
+            say = lead + say
+            points = [(0, 0)] + [(a + len(lead), b) for a, b in points]
+    speaker = (Speaker(say, args.name, stop_on_key=key_mode, shown=shown_say, points=points)
+               if say and not from_file else None)
 
     mode_box = {"key": key_mode}   # 音声の取り込み(下の frames)に、いまの方式を伝える
     started = {"speaker": False}
@@ -1167,9 +1248,9 @@ def main() -> int:
 
     def on_ready() -> None:
         # 合言葉の方式で、マイクが開いた。読み上げがまだなら始める。読み上げ中でなければ、合図を鳴らす
-        if speaker and not started["speaker"]:
-            start_speaker()
-        elif not (speaker and not speaker.done.is_set()):
+        fresh = bool(speaker) and not started["speaker"]
+        start_speaker()
+        if not fresh and not (speaker and not speaker.done.is_set()):
             play(CUE_START)
 
     def live_frames():
@@ -1252,6 +1333,7 @@ def main() -> int:
                         cut()
                     jobs.join()
                     state["memo_hold"] = False
+                    memo_flush()
                     if state["reason"]:
                         break
                     if texts:
@@ -1318,7 +1400,7 @@ def main() -> int:
             if _flags["paused"]:
                 state["reason"] = state["reason"] or "paused"
                 break
-            if follow_mode and (listen_mode() == "key") != key_mode and not talking:
+            if follow_mode and (listen_mode("key" if key_mode else "word") == "key") != key_mode and not talking:
                 # 字幕の窓で、方式が切り替えられた。その場で従う。話している途中の分は、ここまでで文字にする
                 if in_speech:
                     cut()
@@ -1330,6 +1412,8 @@ def main() -> int:
                 recent.clear()
                 preroll.clear()
                 state["memo_hold"] = False
+                if key_mode:
+                    start_speaker()  # 読み上げがまだ始まっていなければ、始める(合言葉の方式では、マイクが開くのを待っていた)
             if _flags["focus"] and _flags["focus"] != args.name and not talking:
                 # 利用者が、別のセッションを話す相手に選んだ。読み上げも聞き取りもやめて、順番をゆずる
                 state["reason"] = state["reason"] or "yield"
@@ -1392,6 +1476,7 @@ def main() -> int:
               else "[読み上げは、始めてすぐに止まりました。ほぼ伝わっていません]")
     if texts:
         print("\n".join(texts))
+    memo_flush()
     if not from_file and reason != "interrupted":
         # 中断されたときは、出力が読まれないので、預かったまま残す(次の聞き取りで渡す)
         for m in memo_take(args.name):

@@ -53,8 +53,9 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("読み上げ中に右 ⌘ を押す", "読み上げが止まり、そのまま話せる"),
     ]),
     ("メモ(あとでやること)", [
-        ("右 ⌘ +「メモ、(内容)」", "預かって、会話は続く。返事は、キーを離してから、もう一度押して話す"),
-        ("Claude の作業中に右 ⌘", "合図が鳴ってから内容を話す。「メモ」と言わなくてよい"),
+        ("右 ⌘ を押し、合図のあとに「メモ、(内容)」", "預かって、会話は続く。離すまでが 1 件。返事は、もう一度押して話す"),
+        ("Claude の作業中に右 ⌘", "押して 2 秒ほどで合図が鳴る。それから内容を話す。「メモ」と言わなくてよい"),
+        ("読み方を教える", "「(語)は(読み)と読んで」と言う。全セッションで、次の読み上げから効く"),
         ("預かったメモ", "Claude が、そのセッションの TODO.md に書き足す"),
     ]),
     ("タブ", [
@@ -404,9 +405,17 @@ final class CaptionController: NSObject {
     var seekDragging = false
     var seekActive = false
     var seekFrac = 0.0         // 読み終えた割合(つまみを動かしている間は、つまみの位置)
-    var seekPre = 0.0          // 読み上げの頭にある、字幕に出ない部分(名乗り)の割合
+    var seekMap: [[Double]] = []   // 音の位置(0〜1)と、字幕の文の位置(0〜1)の対応(listen.py が書く)
     /// 字幕の文の中で、読み終えた割合(名乗りの分を除く)
-    var markFrac: Double { seekPre < 0.95 ? max(0, (seekFrac - seekPre) / (1 - seekPre)) : seekFrac }
+    var markFrac: Double {
+        // 名乗りは字幕に出ず、表記と読みは長さが違うので、対応をたどって求める
+        guard seekMap.count >= 2 else { return seekFrac }
+        for k in 1..<seekMap.count where seekMap[k].count == 2 && seekMap[k - 1].count == 2 {
+            let (a0, b0, a1, b1) = (seekMap[k - 1][0], seekMap[k - 1][1], seekMap[k][0], seekMap[k][1])
+            if seekFrac <= a1 { return a1 > a0 ? b0 + (b1 - b0) * (seekFrac - a0) / (a1 - a0) : b1 }
+        }
+        return 1
+    }
     var shownMark = -1         // 字幕に反映済みの、読み終えた文字数
     var markedRange: NSRange? = nil   // 読み上げ中の発言の本文が、表示の中で占める範囲
     var markedText = ""
@@ -632,7 +641,7 @@ final class CaptionController: NSObject {
             pos = p["pos"] as? Double ?? 0
             dur = p["dur"] as? Double ?? 0
             seekName = p["name"] as? String ?? ""
-            seekPre = p["pre"] as? Double ?? 0
+            seekMap = p["map"] as? [[Double]] ?? []
         }
         seekSlider.isEnabled = active && dur > 0
         seekActive = active && dur > 0
@@ -801,6 +810,15 @@ final class CaptionController: NSObject {
             x += 6
         }
         bar.zones = zones
+        // タブが、右側のボタンに重ならないようにする。窓の最小の幅を、タブとボタンが並ぶ幅にし、
+        // いまの幅が足りなければ、窓を広げる
+        let needed = x + 300
+        panel.minSize = NSSize(width: max(420, needed), height: 100)
+        if panel.frame.width < needed {
+            var f = panel.frame
+            f.size.width = needed
+            panel.setFrame(f, display: true)
+        }
         bar.highlighted = nil
         bar.needsDisplay = true
         styleChips()
