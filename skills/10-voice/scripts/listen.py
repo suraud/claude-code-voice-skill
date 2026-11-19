@@ -46,6 +46,7 @@ import webrtcvad
 WHISPER_URL = "http://127.0.0.1:2022/v1/audio/transcriptions"  # Mac 内に固定
 KOKORO_URL = "http://127.0.0.1:8880/v1/audio/speech"           # Mac 内に固定
 KOKORO_VOICE = "jf_alpha"
+SPEEDS = (1.0, 1.25)  # 字幕の窓のボタンで切り替える、読み上げの速さ
 KOKORO_RATE = 24000  # Kokoro の pcm 出力(モノラル・16bit)
 RATE = 16000
 FRAME_MS = 30
@@ -70,6 +71,7 @@ CUE_MISS = "/System/Library/Sounds/Funk.aiff"  # キーを押して話したの�
 
 # Bluetooth のイヤホンは、マイクを開いた直後に通話用の接続へ切り替わり、
 # その間の約 1 秒は音が出ない。音声が届き始めてからこの秒数を待って音を出す
+KEY_WARMUP_S = 1.0   # キーの方式で、キーを押してから合図を鳴らすまでの秒数(短すぎると、話し始めが欠ける)
 WARMUP_S = 1.5
 CUE_START = "/System/Library/Sounds/Ping.aiff"
 CUE_END = "/System/Library/Sounds/Glass.aiff"
@@ -440,6 +442,16 @@ def transcribe(client: httpx.Client, pcm: bytes) -> str:
     return " ".join(r.json().get("text", "").split())
 
 
+def speech_speed() -> float:
+    """字幕の窓で選ばれている、読み上げの速さ。記録がなければ 1.0。"""
+    try:
+        with open(SESSIONS_PATH, encoding="utf-8") as f:
+            speed = float(json.load(f).get("speed", 1.0))
+        return speed if 0.5 <= speed <= 2.0 else 1.0
+    except (OSError, ValueError, TypeError):
+        return 1.0
+
+
 class Speaker:
     """Mac 内の Kokoro で音声を作り、途中で止められる形で再生する。"""
 
@@ -450,21 +462,40 @@ class Speaker:
         self.cancel = threading.Event()
         self.error: str | None = None
         self.pcm = b""
-        self.written = 0  # 再生に渡したバイト数
+        self.written = 0  # 再生に渡したバイト数(いまの pcm の中で)
+        self.offset = 0   # いまの pcm が、文の何文字目から始まるか(途中で速さを変えると、残りを作り直す)
+        self.speed = speech_speed()
         threading.Thread(target=self._synth, daemon=True).start()
+
+    def _request(self, text: str, speed: float) -> bytes:
+        r = httpx.post(
+            KOKORO_URL,
+            json={"model": "tts-1", "voice": KOKORO_VOICE, "input": text, "response_format": "pcm", "speed": speed},
+            timeout=120,
+        )
+        r.raise_for_status()
+        return r.content
 
     def _synth(self) -> None:
         try:
-            r = httpx.post(
-                KOKORO_URL,
-                json={"model": "tts-1", "voice": KOKORO_VOICE, "input": self.text, "response_format": "pcm"},
-                timeout=120,
-            )
-            r.raise_for_status()
-            self.pcm = r.content
+            self.pcm = self._request(self.text, self.speed)
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
         self.ready.set()
+
+    def _respeed(self, speed: float) -> bool:
+        """読み上げの途中で速さが変わった。読み終えた文の切れ目から先を、新しい速さで作り直す。"""
+        heard = self.heard_text()
+        rest = self.text[len(heard):]
+        self.speed = speed
+        if not rest.strip():
+            return False
+        try:
+            pcm = self._request(rest, speed)
+        except Exception:
+            return False  # 作り直せなければ、いまの速さのまま読み続ける
+        self.offset, self.pcm, self.written = len(heard), pcm, 0
+        return True
 
     def heard_text(self) -> str:
         """止めた時点までに読み上げた部分を、再生した長さの割合から見積もる。
@@ -474,7 +505,7 @@ class Speaker:
         if not self.pcm:
             return ""
         played = max(0, self.written - int(0.3 * KOKORO_RATE) * 2)  # 出力の遅れの分を引く
-        n = int(len(self.text) * played / len(self.pcm))
+        n = self.offset + int((len(self.text) - self.offset) * played / len(self.pcm))
         head = self.text[:n]
         cut_at = max(head.rfind(c) for c in "。、？！")
         return head[: cut_at + 1] if cut_at >= 0 else ""
@@ -505,12 +536,21 @@ class Speaker:
                     waited += 0.2
             wait_mic_settle(self.cancel)
             with speak_lock, sd.RawOutputStream(samplerate=KOKORO_RATE, channels=1, dtype="int16") as out:
-                for i in range(0, len(self.pcm), step):
+                i = 0
+                checked = time.time()
+                while i < len(self.pcm):
                     if self.cancel.is_set():
                         out.abort()
                         return
                     out.write(self.pcm[i : i + step])
-                    self.written = min(i + step, len(self.pcm))
+                    i += step
+                    self.written = min(i, len(self.pcm))
+                    if time.time() - checked >= 0.4:
+                        # 字幕の窓で速さが変えられたら、残りを新しい速さで読む
+                        checked = time.time()
+                        speed = speech_speed()
+                        if abs(speed - self.speed) > 0.01 and self._respeed(speed):
+                            i = 0
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
         finally:
@@ -551,7 +591,7 @@ def key_frames(stop: threading.Event, on_ready):
     """キーの方式の音声。キーが押されている間だけマイクを開く。
 
     30 ミリ秒ごとに 1 つ返す。マイクを閉じている間と、開いた直後(Bluetooth が音を拾えない間)は None。
-    開いてから WARMUP_S たつと on_ready を呼び(合図を鳴らす)、そこからの音声を返す。
+    開いてから KEY_WARMUP_S たつと on_ready を呼び(合図を鳴らす)、そこからの音声を返す。
     キーを離して RELEASE_GRACE_S たつと、マイクを閉じる。
     """
     import sounddevice as sd
@@ -580,7 +620,7 @@ def key_frames(stop: threading.Event, on_ready):
                     continue
                 buf += chunk
                 received += len(chunk)
-                if not ready and received >= WARMUP_S * RATE * 2:
+                if not ready and received >= KEY_WARMUP_S * RATE * 2:
                     ready = True
                     buf = b""  # 合図より前の音は捨てる
                     on_ready()

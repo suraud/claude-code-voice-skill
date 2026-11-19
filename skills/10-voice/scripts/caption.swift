@@ -55,6 +55,7 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("丸の色", "緑: 会話中　橙: 話したくて待っている　灰: 作業中、または声では待っていない(画面を見る)"),
     ]),
     ("窓", [
+        ("1x / 1.25x", "読み上げの速さを切り替える。途中で押すと、少し戻って、新しい速さで読む"),
         ("⏸ 停止 / ▶ 再開", "すべてのセッションが、話すのも聞くのもやめる(会議のとき)"),
         ("×", "隠す。次の読み上げや発言でまた出る"),
         ("帯をつかむ / 右下のつまみ", "動かす / 大きさを変える"),
@@ -111,6 +112,20 @@ func updateRecord(_ change: (inout [String: Any]) -> Void) {
 
 func setPaused(_ paused: Bool) {
     updateRecord { $0["paused"] = paused }
+}
+
+let speeds: [Double] = [1.0, 1.25]  // 読み上げの速さ(listen.py の SPEEDS と同じ)
+
+/// 読み上げの速さを読む。記録がなければ 1.0
+func loadSpeed() -> Double {
+    guard let data = FileManager.default.contents(atPath: sessionsPath),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let speed = root["speed"] as? Double else { return 1.0 }
+    return speed
+}
+
+func setSpeed(_ speed: Double) {
+    updateRecord { $0["speed"] = speed }
 }
 
 /// 話す相手を書く。nil は、相手を選ばない(「すべて」)
@@ -321,6 +336,8 @@ final class CaptionController: NSObject {
     var paused = false
     let pauseButton = NSButton(frame: .zero)
     let helpButton = NSButton(frame: .zero)
+    let speedButton = NSButton(frame: .zero)
+    var speed = 1.0
     var showingHelp = false
     var draggingChip = false
 
@@ -411,6 +428,33 @@ final class CaptionController: NSObject {
         helpButton.toolTip = "使い方を表示する。もう一度押すと、字幕に戻る"
         bar.addSubview(helpButton)
         styleHelp()
+
+        speedButton.frame = NSRect(x: bar.bounds.width - 190, y: 5, width: 52, height: 20)
+        speedButton.isBordered = false
+        speedButton.wantsLayer = true
+        speedButton.layer?.cornerRadius = 6
+        speedButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        speedButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        speedButton.contentTintColor = .white
+        speedButton.target = self
+        speedButton.action = #selector(cycleSpeed(_:))
+        speedButton.autoresizingMask = [.minXMargin]
+        speedButton.toolTip = "押すと、読み上げの速さを切り替える(読み上げの途中でも効く)"
+        bar.addSubview(speedButton)
+        speed = loadSpeed()
+        styleSpeed()
+    }
+
+    @objc func cycleSpeed(_ sender: Any?) {
+        let i = speeds.firstIndex(where: { abs($0 - speed) < 0.01 }) ?? 0
+        speed = speeds[(i + 1) % speeds.count]
+        setSpeed(speed)
+        styleSpeed()
+    }
+
+    func styleSpeed() {
+        speedButton.title = String(format: "%gx", speed)
+        speedButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(speed > 1.01 ? 0.35 : 0.14).cgColor
     }
 
     @objc func toggleHelp(_ sender: Any?) {
