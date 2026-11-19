@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | release | end | notify | captions on|off
+# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | release | end | notify | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -175,6 +175,13 @@ case "${1:-}" in
     [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
     up "$WHISPER_URL" || die "Whisper が起動していません。先に '$0 on' を実行してください"
     exec "$PY" "$(dirname "$0")/listen.py" "$@"
+    ;;
+  say)
+    # 返事のいらない一言を読み上げる。聞き取らずに終わり、順番を手放す(作業に入る前の一言など)。
+    shift
+    [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
+    up "$KOKORO_URL" || die "Kokoro が起動していません。先に '$0 on' を実行してください"
+    exec "$PY" "$(dirname "$0")/listen.py" --no-reply --say "$1"
     ;;
   notify)
     # Claude Code の hook から呼ぶ。実行の確認が画面に出たことを、音声で会話中のセッションに限って声で知らせる。

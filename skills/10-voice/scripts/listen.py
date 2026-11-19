@@ -1015,6 +1015,7 @@ def memo_watch() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="読み上げてから、合言葉が聞こえるまで聞き続け、文字にして出力する")
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
+    ap.add_argument("--no-reply", action="store_true", help="読み上げるだけで、聞き取らずに終わる。順番も手放す(返事のいらない一言に使う。voice.sh say が付ける)")
     ap.add_argument("--name", default=session_name(), help="このセッションの呼び名(既定: 作業フォルダの名前)")
     ap.add_argument("--mode", choices=("key", "word"), default=None, help="聞き取りの方式。key: キーを押している間だけ聞く。word: 合言葉が聞こえるまで聞く。指定しなければ、字幕の窓で選ばれている方式(選ばれていなければ key)。検証のとき以外は指定しない")
     ap.add_argument("--wait", type=float, default=LOCK_WAIT_S, help=f"話す順番を待つ秒数の上限(既定: {LOCK_WAIT_S})。バックグラウンドで長く待つときに大きくする")
@@ -1279,6 +1280,10 @@ def main() -> int:
             since_voice = 0.0
             if speaker.done.is_set():
                 speaking = False
+                if args.no_reply:
+                    # 返事のいらない一言。聞き取らずに終わり、順番を手放す(ほかのセッションが、すぐ話せる)
+                    state["reason"] = state["reason"] or "said"
+                    break
                 if not barged and not key_mode:
                     play(CUE_START)  # キーの方式では鳴らさない。合図は、キーを押してマイクが開いたときに鳴る
             elif not barged and (down if key_mode else in_speech and voiced_frames * FRAME_S >= BARGE_VOICED_S):
@@ -1364,7 +1369,8 @@ def main() -> int:
         after = "muted" if reason == "mute" else "waiting" if reason in ("yield", "paused") else "working"
         sessions_update(args.name, after)
     if not from_file:
-        play(CUE_END)
+        if reason != "said":
+            play(CUE_END)
         said = " ".join(texts)
         if barged:
             said = f"(読み上げに割り込み){said}"
