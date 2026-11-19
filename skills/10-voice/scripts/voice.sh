@@ -125,6 +125,27 @@ caption_off() {
   echo "字幕: 閉じました"
 }
 
+memo_running() { pgrep -f "listen.py --memo-watch" >/dev/null 2>&1; }
+
+# メモの見張りを始める。Claude の作業中に、キーを押して話したメモを預かる。失敗しても会話はできる。
+memo_on() {
+  [ -x "$PY" ] || return 0
+  if memo_running; then
+    # スクリプトが新しくなっていたら、動かし直す
+    [ "$(dirname "$0")/listen.py" -nt "$HOME/.voicemode/10-voice-memo-watch.lock" ] || { echo "メモ: 見張りは動いています"; return 0; }
+    pkill -f "listen.py --memo-watch" >/dev/null 2>&1
+    sleep 0.5
+  fi
+  touch "$HOME/.voicemode/10-voice-memo-watch.lock"
+  nohup "$PY" "$(cd "$(dirname "$0")" && pwd -P)/listen.py" --memo-watch >/dev/null 2>"$HOME/.voicemode/10-voice-memo-watch.err" &
+  echo "メモ: 見張りを始めました"
+}
+
+memo_off() {
+  pkill -f "listen.py --memo-watch" >/dev/null 2>&1
+  echo "メモ: 見張りを止めました"
+}
+
 case "${1:-}" in
   on)
     check_privacy
@@ -132,8 +153,10 @@ case "${1:-}" in
     start_one whisper "$WHISPER_URL" 2022
     start_one kokoro "$KOKORO_URL" 8880
     caption_on
+    memo_on
     ;;
   off)
+    memo_off
     caption_off
     stop_one whisper 2022
     stop_one kokoro 8880

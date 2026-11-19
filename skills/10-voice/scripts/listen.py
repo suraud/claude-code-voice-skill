@@ -87,6 +87,13 @@ TOTAL_LIMIT_S = 540  # 順番待ちと聞き取りを合わせた上限(コマ�
 # voice.sh の CAPTION_DIR と同じ場所。日付ごとのファイル(YYYY-MM-DD.txt)に追記し、消さない
 CAPTION_DIR = os.path.expanduser("~/.voicemode/10-voice-captions")
 
+# 声のメモ。聞き取り中に「メモ、…」と言われた分と、Claude の作業中に見張り(--memo-watch)が聞いた分を、
+# セッションごとのファイルに預かる。そのセッションが次に聞き取りを終えるときに、出力に付けて渡し、消す
+MEMO_DIR = os.path.expanduser("~/.voicemode/10-voice-memos")
+MEMO_WATCH_LOCK = os.path.expanduser("~/.voicemode/10-voice-memo-watch.lock")
+MEMO_MIN_HOLD_S = 0.4    # 見張りは、キーがこの秒数押され続けてからマイクを開く(ショートカットで開かないため)
+CUE_MEMO = "/System/Library/Sounds/Pop.aiff"   # メモを預かった合図
+
 BOUNDARY = r"\s。、．，.,!?！？…・"
 # 間をおかずに「どうぞ以上」と言われても終わりとみなすための、文末らしい文字。
 # 「これ以上」「3つ以上」「今まで以上」「必要以上」の直前の文字は含めない
@@ -95,6 +102,35 @@ MUTE_PATTERN = re.compile(
     rf"^[{BOUNDARY}]*(?:ミュート|mute)(?:して|にして|です|お願い|お願いします)?[{BOUNDARY}]*$",
     re.IGNORECASE,
 )
+
+
+# 「メモ、見積もりを作り直す」のように、メモで始まる発言。「メモを見せて」「メモ帳」などは含めない
+MEMO_PATTERN = re.compile(rf"^[{BOUNDARY}]*(?:メモ|めも|memo)(?![をのにはがでと帳書]|って|用紙|リ|して)[{BOUNDARY}]*(.*)$", re.IGNORECASE)
+
+
+def memo_add(name: str, text: str) -> None:
+    """セッション宛てのメモを預かる。"""
+    text = " ".join(text.split())
+    if not text:
+        return
+    os.makedirs(MEMO_DIR, mode=0o700, exist_ok=True)
+    fd = os.open(os.path.join(MEMO_DIR, name + ".txt"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(text + "\n")
+
+
+def memo_take(name: str) -> list[str]:
+    """セッション宛てに預かっているメモを取り出し、預かり場所から消す。"""
+    try:
+        with open(os.path.join(MEMO_DIR, name + ".txt"), "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            memos = [line.strip() for line in f if line.strip()]
+            f.seek(0)
+            f.truncate()
+            return memos
+    except OSError:
+        return []
 
 
 def end_pattern(word: str) -> re.Pattern:
@@ -549,6 +585,107 @@ def notify() -> int:
     return 0
 
 
+def memo_watch() -> int:
+    """Claude の作業中(どのセッションもマイクを開いていない間)に、キーを押して話したメモを預かる。
+
+    voice.sh on が起動し、off が止める。キーが押されている間だけマイクを開く。
+    宛先は、利用者が話す相手に選んでいるセッション。選んでいなければ、最後に話していたセッション。
+    """
+    import sounddevice as sd
+
+    single = open(MEMO_WATCH_LOCK, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(single, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0  # すでに動いている
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
+    def target(lock) -> str | None:
+        try:
+            with open(SESSIONS_PATH, encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            return None
+        sessions = rec.get("sessions") if isinstance(rec.get("sessions"), dict) else {}
+        if rec.get("boot") != boot_id() or rec.get("paused"):
+            return None
+        if rec.get("focus") in sessions:
+            return rec["focus"]
+        holder = read_floor(lock)[0]
+        return holder if holder in sessions else None
+
+    def held_for(seconds: float) -> bool:
+        start = time.time()
+        while time.time() - start < seconds:
+            if not key_down():
+                return False
+            time.sleep(0.03)
+        return True
+
+    while True:
+        time.sleep(0.05)
+        if not key_down():
+            continue
+        lock = None
+        try:
+            if not held_for(MEMO_MIN_HOLD_S):
+                continue
+            lock = open(LOCK_PATH, "a+", encoding="utf-8")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                # どこかのセッションが話しているか、聞いている。そちらが受け取る
+                while key_down():
+                    time.sleep(0.1)
+                continue
+            name = target(lock)
+            if not name:
+                while key_down():
+                    time.sleep(0.1)
+                continue
+            # マイクを開く。Bluetooth は開いた直後の音を拾えないので、合図を鳴らしてから話してもらう
+            q: queue.Queue = queue.Queue()
+            pcm = b""
+            cued = False
+            with sd.RawInputStream(samplerate=RATE, blocksize=FRAME_BYTES // 2, dtype="int16", channels=1,
+                                   callback=lambda indata, *_: q.put(bytes(indata))):
+                released = 0.0
+                received = 0
+                while released < RELEASE_GRACE_S and len(pcm) < 120 * RATE * 2:
+                    try:
+                        chunk = q.get(timeout=0.2)
+                    except queue.Empty:
+                        chunk = b""
+                    received += len(chunk)
+                    if not cued and received >= WARMUP_S * RATE * 2:
+                        cued = True
+                        play(CUE_START)
+                    elif cued:
+                        pcm += chunk
+                    released = released + len(chunk) / (RATE * 2) if not key_down() else 0.0
+                    if not chunk and not key_down():
+                        released += 0.2
+            text = ""
+            if len(pcm) >= int(0.5 * RATE * 2):
+                with httpx.Client(timeout=120) as client:
+                    text = transcribe(client, pcm)
+            m = MEMO_PATTERN.match(text)
+            if m and m.group(1).strip():
+                text = m.group(1)
+            if text.strip():
+                memo_add(name, text)
+                caption(name, "メモ", text)
+                play(CUE_MEMO)
+            else:
+                play(CUE_MISS)
+        except Exception as e:  # 見張りは止めない
+            print(f"メモの見張り: {type(e).__name__}: {e}", file=sys.stderr)
+            time.sleep(1)
+        finally:
+            if lock is not None:
+                lock.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="読み上げてから、合言葉が聞こえるまで聞き続け、文字にして出力する")
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
@@ -560,12 +697,15 @@ def main() -> int:
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")
     ap.add_argument("--notify", action="store_true", help="hook 用。標準入力の JSON にある作業フォルダのセッションが音声で会話中なら、確認待ちを声で知らせる")
+    ap.add_argument("--memo-watch", action="store_true", help="Claude の作業中に、キーを押して話したメモを預かる見張りとして動く(voice.sh on が起動する)")
     ap.add_argument("--file", help="検証用。マイクの代わりに WAV ファイルを読む")
     ap.add_argument("--verbose", action="store_true", help="区切りごとの認識結果を標準エラーに出す")
     args = ap.parse_args()
 
     if args.notify:
         return notify()
+    if args.memo_watch:
+        return memo_watch()
     if args.release or args.end:
         release_turn(args.name)
         if args.end:
@@ -584,7 +724,7 @@ def main() -> int:
     vad = webrtcvad.Vad(3)
     stop = threading.Event()
     texts: list[str] = []
-    state: dict[str, str | None] = {"reason": None, "error": None}
+    state: dict = {"reason": None, "error": None, "memo_hold": False, "memo_count": 0}
     jobs: queue.Queue = queue.Queue()
 
     def worker() -> None:
@@ -604,6 +744,16 @@ def main() -> int:
                     if MUTE_PATTERN.match(text):
                         state["reason"] = "mute"
                         stop.set()
+                        continue
+                    memo = MEMO_PATTERN.match(text)
+                    if memo or state["memo_hold"]:
+                        # メモは返事と分けて預かる。キーの方式では、離すまでの続きもメモにする
+                        body = memo.group(1) if memo else text
+                        state["memo_hold"] = key_mode
+                        if body.strip():
+                            memo_add(args.name, body)
+                            caption(args.name, "メモ", body)
+                            state["memo_count"] += 1
                         continue
                     m = pattern.search(text)
                     if m:
@@ -670,6 +820,7 @@ def main() -> int:
     talking = False   # キーの方式で、キーが押されている(離した直後の猶予を含む)
     release_run = 0   # キーを離してからのフレーム数
     hold_frames = 0   # キーを押し続けているフレーム数
+    memo_seen = 0     # 合図を鳴らし終えたメモの数
     down = False
 
     def cut() -> None:
@@ -709,12 +860,16 @@ def main() -> int:
                     if in_speech:
                         cut()
                     jobs.join()
+                    state["memo_hold"] = False
                     if state["reason"]:
                         break
                     if texts:
                         state["reason"] = "released"
                         break
-                    if hold_frames * FRAME_S >= KEY_MIN_HOLD_S:
+                    if state["memo_count"] > memo_seen:
+                        memo_seen = state["memo_count"]
+                        play(CUE_MEMO)  # メモを預かった。聞き取りは続ける
+                    elif hold_frames * FRAME_S >= KEY_MIN_HOLD_S:
                         play(CUE_MISS)  # 押して話したのに、文字にならなかった。もう一度話してもらう
         # キーの方式では、押していない間の音を捨てる(声の判定もしない)
         voiced = vad.is_speech(frame, RATE) if (talking or not key_mode) else False
@@ -825,6 +980,9 @@ def main() -> int:
               else "[読み上げは、始めてすぐに止まりました。ほぼ伝わっていません]")
     if texts:
         print("\n".join(texts))
+    if not from_file:
+        for m in memo_take(args.name):
+            print(f"[メモ: {m}]")
     if key_note:
         print(key_note)
     waiting_for = "キーは押されていません" if key_mode else f"「{args.end_word}」は聞こえていません"
