@@ -1,4 +1,9 @@
-"""読み上げてから、合言葉(既定は「以上」)が聞こえるまで、マイクを閉じずに聞き続ける。
+"""読み上げてから、利用者の発言を聞き取って文字にする。聞き取りの方式は 2 つある。
+
+- key(既定): キー(右コマンド)を押している間だけ聞く。離すと発言の終わり。
+  読み上げは、キーを押したときだけ止まる。押していない間の音は捨て、文字にしない
+- word: 合言葉(既定は「以上」)が聞こえるまで、マイクを閉じずに聞き続ける。
+  読み上げ中に声が続いたら、読み上げを止める。キーボードに手が届かないときに使う
 
 voice.sh listen から、VoiceMode と一緒に入っている Python で実行する。
 
@@ -21,6 +26,7 @@ from __future__ import annotations
 import argparse
 import array
 import collections
+import ctypes
 import fcntl
 import io
 import json
@@ -53,6 +59,11 @@ PREROLL_FRAMES = 10  # 話し始めが欠けないよう、直前 0.3 秒を含�
 START_WINDOW = 5     # 直近 5 フレーム中 3 フレームが声なら、話し始めとみなす
 START_VOICED = 3
 BARGE_VOICED_S = 0.45  # 読み上げ中に声がこの長さ続いたら、割り込みとみなす
+
+# キーの方式。押している間だけ聞く。キーの番号は macOS の仮想キーコード(54 は右コマンド)
+TALK_KEY = 54
+TALK_KEY_FLAG = 0x10      # 修飾キーの状態に含まれる、右コマンドのビット
+RELEASE_GRACE_S = 0.5     # キーを離してから、この秒数のうちに押し直せば、続きとして扱う
 
 # Bluetooth のイヤホンは、マイクを開いた直後に通話用の接続へ切り替わり、
 # その間の約 1 秒は音が出ない。音声が届き始めてからこの秒数を待って音を出す
@@ -261,6 +272,23 @@ def session_name() -> str:
     return re.sub(r"^[\d_\-\s]+", "", base) or base
 
 
+_cg: list = []
+
+
+def key_down() -> bool:
+    """話すためのキーが押されているか。調べられない環境では例外を出す。"""
+    if not _cg:
+        cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cg.CGEventSourceKeyState.restype = ctypes.c_bool
+        cg.CGEventSourceKeyState.argtypes = [ctypes.c_int32, ctypes.c_uint16]
+        cg.CGEventSourceFlagsState.restype = ctypes.c_uint64
+        cg.CGEventSourceFlagsState.argtypes = [ctypes.c_int32]
+        _cg.append(cg)
+    cg = _cg[0]
+    # 0 は、すべての入力元を合わせた状態。キーの状態か、修飾キーのビットのどちらかで判定する
+    return bool(cg.CGEventSourceKeyState(0, TALK_KEY)) or bool(cg.CGEventSourceFlagsState(0) & TALK_KEY_FLAG)
+
+
 def play(path: str) -> None:
     try:
         subprocess.Popen(["afplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -274,7 +302,8 @@ def to_wav(pcm: bytes) -> bytes:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(RATE)
-        w.writeframes(pcm)
+        pad = b"\x00" * (RATE * 2 * 3 // 10)  # 前後に 0.3 秒の無音を足す。頭の音が欠けて認識されるのを防ぐ
+        w.writeframes(pad + pcm + pad)
     return buf.getvalue()
 
 
@@ -393,6 +422,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="読み上げてから、合言葉が聞こえるまで聞き続け、文字にして出力する")
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
     ap.add_argument("--name", default=session_name(), help="このセッションの呼び名(既定: 作業フォルダの名前)")
+    ap.add_argument("--mode", choices=("key", "word"), default="key", help="聞き取りの方式。key: キーを押している間だけ聞く(既定)。word: 合言葉が聞こえるまで聞く")
     ap.add_argument("--end-word", default="以上", help="発言の終わりを示す合言葉(既定: 以上)")
     ap.add_argument("--idle", type=float, default=300, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 300)")
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
@@ -408,6 +438,14 @@ def main() -> int:
             session_end(args.name)
         return 0
 
+    key_mode = args.mode == "key" and not args.file
+    key_note = ""
+    if key_mode:
+        try:
+            key_down()
+        except (OSError, AttributeError) as e:
+            key_mode = False
+            key_note = f"[キーの状態を調べられないため、「{args.end_word}」で終える方式で聞き取りました({type(e).__name__})]"
     pattern = end_pattern(args.end_word)
     vad = webrtcvad.Vad(3)
     stop = threading.Event()
@@ -438,8 +476,9 @@ def main() -> int:
                         head = text[: m.start()].strip()
                         if head:
                             texts.append(head)
-                        state["reason"] = "end-word"
-                        stop.set()
+                        if not key_mode:  # キーの方式では、習慣で「以上」と言われても、取り除くだけにする
+                            state["reason"] = "end-word"
+                            stop.set()
                     else:
                         texts.append(text)
                 except Exception as e:  # Whisper に届かない場合など
@@ -494,6 +533,9 @@ def main() -> int:
     peak = 0
     speaking = speaker is not None  # 読み上げが終わるまで True
     barged = False
+    talking = False   # キーの方式で、キーが押されている(離した直後の猶予を含む)
+    release_run = 0   # キーを離してからのフレーム数
+    down = False
 
     def cut() -> None:
         nonlocal segment, in_speech, voiced_frames, silent_run
@@ -509,13 +551,39 @@ def main() -> int:
     for frame in frames:
         total_ticks += 1
         elapsed += FRAME_S
-        voiced = vad.is_speech(frame, RATE)
+        if key_mode:
+            down = key_down()
+            if down:
+                if not talking and not in_speech:
+                    # 押した瞬間から録る。声の判定を待つと、話し始めが欠けることがある
+                    in_speech = True
+                    segment = list(preroll)
+                    voiced_frames = 0
+                    silent_run = 0
+                    preroll.clear()
+                talking = True
+                release_run = 0
+            elif talking:
+                release_run += 1
+                if release_run * FRAME_S >= RELEASE_GRACE_S:
+                    # キーを離した。話していれば発言の終わり。何も話していなければ、聞き取りを続ける
+                    talking = False
+                    if in_speech:
+                        cut()
+                    jobs.join()
+                    if state["reason"]:
+                        break
+                    if texts:
+                        state["reason"] = "released"
+                        break
+        # キーの方式では、押していない間の音を捨てる(声の判定もしない)
+        voiced = vad.is_speech(frame, RATE) if (talking or not key_mode) else False
         recent.append(voiced)
         if args.verbose:
             total_frames += 1
             total_voiced += voiced
             peak = max(peak, max(abs(v) for v in array.array("h", frame)))
-        if voiced:
+        if down if key_mode else voiced:
             since_voice = 0.0
         else:
             since_voice += FRAME_S
@@ -528,7 +596,7 @@ def main() -> int:
                 speaking = False
                 if not barged:
                     play(CUE_START)
-            elif not barged and in_speech and voiced_frames * FRAME_S >= BARGE_VOICED_S:
+            elif not barged and (down if key_mode else in_speech and voiced_frames * FRAME_S >= BARGE_VOICED_S):
                 barged = True
                 speaker.cancel.set()
 
@@ -557,7 +625,7 @@ def main() -> int:
             if _flags["paused"]:
                 state["reason"] = state["reason"] or "paused"
                 break
-        if since_voice >= args.idle and not in_speech:
+        if since_voice >= args.idle and not in_speech and not talking:
             jobs.join()
             state["reason"] = state["reason"] or "idle"
             break
@@ -606,9 +674,13 @@ def main() -> int:
             print("[割り込み: 読み上げを始めてすぐに止めました。ほぼ伝わっていません]")
     if texts:
         print("\n".join(texts))
+    if key_note:
+        print(key_note)
+    waiting_for = "キーは押されていません" if key_mode else f"「{args.end_word}」は聞こえていません"
+    idle_what = "キーが押されませんでした" if key_mode else "声が聞こえませんでした"
     notes = {
-        "idle": f"[打ち切り: {args.idle:g} 秒間、声が聞こえませんでした。「{args.end_word}」は聞こえていません]",
-        "max": f"[打ち切り: 制限時間({args.max:g} 秒)に達しました。「{args.end_word}」は聞こえていません]",
+        "idle": f"[打ち切り: {args.idle:g} 秒間、{idle_what}。{waiting_for}]",
+        "max": f"[打ち切り: 制限時間({args.max:g} 秒)に達しました。{'発言の途中かもしれません' if key_mode else waiting_for}]",
         "mute": "[ミュート: 利用者が「ミュート」と言いました。マイクを閉じました]",
         "paused": "[一時停止: 利用者が字幕の窓の停止ボタンを押しました。マイクを閉じました。再開ボタンが押されるまで、どのセッションも話しません]",
         "interrupted": "[中断されました]",
