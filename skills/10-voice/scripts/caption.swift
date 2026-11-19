@@ -209,9 +209,12 @@ func pruneEndedSessions() {
     guard let data = FileManager.default.contents(atPath: sessionsPath),
           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let sessions = root["sessions"] as? [String: [String: Any]] else { return }
+    func dead(_ pid: Int) -> Bool { pid > 0 && kill(pid_t(pid), 0) != 0 && errno == ESRCH }
     func ended(_ v: [String: Any]) -> Bool {
-        guard let pid = v["pid"] as? Int, pid > 0 else { return false }
-        return kill(pid_t(pid), 0) != 0 && errno == ESRCH
+        // 同じ名前のフォルダで複数の Claude Code を使うことがある。全部が終了していたら消す
+        var pids = v["pids"] as? [Int] ?? []
+        if let pid = v["pid"] as? Int { pids.append(pid) }
+        return !pids.isEmpty && pids.allSatisfy(dead)
     }
     guard sessions.values.contains(where: ended) else { return }
     updateRecord { root in

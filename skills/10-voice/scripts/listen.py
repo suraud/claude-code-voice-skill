@@ -177,6 +177,16 @@ def boot_id() -> str:
     return _boot[0]
 
 
+def pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (OSError, ValueError, TypeError):
+        return True  # 調べられないときは、動いているものとして扱う
+
+
 def sessions_update(name: str, state: str | None = None) -> dict:
     """自分のセッションを記録に加え(最初は通常)、状態を書く。全セッションの記録を返す。"""
     try:
@@ -195,9 +205,16 @@ def sessions_update(name: str, state: str | None = None) -> dict:
             # Claude Code のプロセス番号を残す。終了したセッションを、字幕の窓がタブから消すため
             pid = os.environ.get("CLAUDE_PID", "")
             dirty = me["t"] == 0  # 記録に加えたばかり
-            if pid.isdigit() and me.get("pid") != int(pid):
-                me["pid"] = int(pid)
-                dirty = True
+            if pid.isdigit():
+                # 同じ名前のフォルダで複数の Claude Code を使うことがあるので、番号は複数持つ。
+                # 動いていない番号は外す。全部が動いていなければ、字幕の窓がタブを消す
+                pids = [p for p in me.get("pids", [me["pid"]] if me.get("pid") else []) if pid_alive(p)]
+                if int(pid) not in pids:
+                    pids.append(int(pid))
+                if pids != me.get("pids"):
+                    me["pids"] = pids
+                    me.pop("pid", None)
+                    dirty = True
             if state is not None:
                 me["state"] = state
                 me["t"] = int(time.time())
