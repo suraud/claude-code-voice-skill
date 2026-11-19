@@ -1280,8 +1280,9 @@ def main() -> int:
             since_voice = 0.0
             if speaker.done.is_set():
                 speaking = False
-                if args.no_reply:
-                    # 返事のいらない一言。聞き取らずに終わり、順番を手放す(ほかのセッションが、すぐ話せる)
+                if args.no_reply and not barged:
+                    # 返事のいらない一言。聞き取らずに終わり、順番を手放す(ほかのセッションが、すぐ話せる)。
+                    # 利用者が途中でキーを押して止めたときは、言いたいことがあるので、ふつうに聞き取る
                     state["reason"] = state["reason"] or "said"
                     break
                 if not barged and not key_mode:
