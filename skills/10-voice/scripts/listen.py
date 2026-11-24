@@ -87,6 +87,8 @@ MIC_SETTLE_S = 1.5
 # 再生の位置(Speaker が書き、字幕の窓のつまみが読む)と、つまみからの位置の指定(字幕の窓が書く)
 PLAYBACK_PATH = os.path.expanduser("~/.voicemode/10-voice-playback.json")
 SEEK_PATH = os.path.expanduser("~/.voicemode/10-voice-seek.json")
+KOKORO_RESTARTING = os.path.expanduser("~/.voicemode/10-voice-kokoro-restarting")  # voice.sh restart-kokoro の間だけある
+KOKORO_RETRY_SECONDS = 120  # Kokoro の再起動の間、読み上げを失敗にせず待つ長さ
 SPEAK_LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice-speak.lock")  # 読み上げの間だけ持つ。声を重ねないため
 LOCK_WAIT_S = 420    # 順番を待つ上限。超えたら、読み上げずに戻る
 MIN_LISTEN_S = 120   # 長く待ったあとでも、聞き取りに使える最低限の秒数
@@ -853,13 +855,24 @@ class Speaker:
         threading.Thread(target=self._synth, daemon=True).start()
 
     def _request(self, text: str, speed: float) -> bytes:
-        r = httpx.post(
-            KOKORO_URL,
-            json={"model": "tts-1", "voice": KOKORO_VOICE, "input": text, "response_format": "pcm", "speed": speed},
-            timeout=120,
-        )
-        r.raise_for_status()
-        return r.content
+        # Kokoro の再起動(voice.sh restart-kokoro)の間は、つながらない、途中で切れる、などで失敗する。
+        # 再起動の印がある間は、戻るまで待って頼み直す。印がなければ、これまでどおり失敗にする
+        deadline = time.monotonic() + KOKORO_RETRY_SECONDS
+        while True:
+            try:
+                r = httpx.post(
+                    KOKORO_URL,
+                    json={"model": "tts-1", "voice": KOKORO_VOICE, "input": text, "response_format": "pcm", "speed": speed},
+                    timeout=120,
+                )
+                if r.status_code >= 500 and os.path.exists(KOKORO_RESTARTING):
+                    raise httpx.RemoteProtocolError("再起動中")
+                r.raise_for_status()
+                return r.content
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError):
+                if time.monotonic() > deadline or self.cancel.is_set() or not os.path.exists(KOKORO_RESTARTING):
+                    raise
+                time.sleep(1)
 
     def _synth(self) -> None:
         try:
@@ -1302,7 +1315,8 @@ def stop_check() -> int:
 
         socket.create_connection(("127.0.0.1", 8880), timeout=0.5).close()
     except OSError:
-        return 0  # 読み上げのサービスが止まっている
+        if not os.path.exists(KOKORO_RESTARTING):
+            return 0  # 読み上げのサービスが止まっている(再起動の途中なら、動いているものとして扱う)
     print(json.dumps({
         "decision": "block",
         "reason": "音声会話の途中です。聞き取りを呼ばずにターンを終えると、利用者の声が届かなくなります。"

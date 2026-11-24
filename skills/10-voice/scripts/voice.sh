@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off
+# 使い方: voice.sh on | off | status | restart-kokoro | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -15,6 +15,7 @@ CAPTION_SRC="$(dirname "$0")/caption.swift"
 CAPTION_BIN="$HOME/.voicemode/10-voice-caption"
 SESSIONS_FILE="$HOME/.voicemode/10-voice-sessions.json"   # listen.py の SESSIONS_PATH と同じ
 CAPTION_DIR="$HOME/.voicemode/10-voice-captions"   # listen.py の CAPTION_DIR と同じ。日付ごとのファイルが入る
+RESTARTING="$HOME/.voicemode/10-voice-kokoro-restarting"   # Kokoro を再起動している間だけ置く(listen.py と caption.swift も見る)
 
 die() { echo "エラー: $*" >&2; exit 1; }
 
@@ -92,6 +93,24 @@ status_one() { # 名前 確認用URL ポート
   if up "$2"; then echo "$1: 起動中($(listen_addr "$3"))"; else echo "$1: 停止中"; fi
 }
 
+# Kokoro が実際に使っているメモリ(圧縮・退避された分を含む)。分からなければ空
+kokoro_memory() {
+  local pid
+  pid=$(lsof -tnP -iTCP:8880 -sTCP:LISTEN 2>/dev/null | head -1)
+  [ -n "$pid" ] && footprint -p "$pid" 2>/dev/null | sed -n 's/.*Footprint: \([0-9.]* [KMG]B\).*/\1/p' | head -1
+}
+
+# 再起動の途中なら、終わるまで待つ(最大 2 分)。再起動の間の読み上げを、失敗にしないため
+wait_restart() {
+  local i
+  for i in $(seq 1 120); do
+    [ -f "$RESTARTING" ] || return 0
+    # 再起動の命令が異常終了して、印だけが残った場合は待たない
+    [ $(( $(date +%s) - $(stat -f %m "$RESTARTING") )) -lt 180 ] || return 0
+    sleep 1
+  done
+}
+
 caption_running() { pgrep -f "$CAPTION_BIN $CAPTION_DIR" >/dev/null 2>&1; }
 
 # 字幕の窓を出す。失敗しても会話はできるので、エラーでは止めない。
@@ -114,7 +133,7 @@ caption_on() {
   if caption_running; then
     echo "字幕: すでに表示しています"
   else
-    nohup "$CAPTION_BIN" "$CAPTION_DIR" "$SESSIONS_FILE" >/dev/null 2>&1 &
+    nohup "$CAPTION_BIN" "$CAPTION_DIR" "$SESSIONS_FILE" "$(cd "$(dirname "$0")" && pwd -P)/voice.sh" >/dev/null 2>&1 &
     echo "字幕: 表示しました"
   fi
 }
@@ -176,6 +195,7 @@ case "${1:-}" in
   status)
     status_one whisper "$WHISPER_URL" 2022
     status_one kokoro "$KOKORO_URL" 8880
+    mem=$(kokoro_memory); [ -n "$mem" ] && echo "kokoro のメモリ: $mem(増えたら restart-kokoro、または字幕の窓のボタンで戻せる)"
     if [ -x "$PY" ]; then "$PY" "$(dirname "$0")/listen.py" --print-mode 2>/dev/null; fi
     ;;
   listen)
@@ -190,10 +210,28 @@ case "${1:-}" in
     shift
     [ -x "$PY" ] || die "VoiceMode の Python が見つかりません: $PY"
     [ -n "${1:-}" ] || { echo "使い方: $0 say '読み上げる文'" >&2; exit 2; }
+    wait_restart
     up "$KOKORO_URL" || die "Kokoro が起動していません。先に '$0 on' を実行してください"
     # 一言のために長く待たない。ほかのセッションが話していて順番が来なければ、読み上げずに戻る
     text="$1"; shift
     exec "$PY" "$(dirname "$0")/listen.py" --no-reply --wait 20 --say "$text" "$@"   # 続けて --open パス を付けられる
+    ;;
+  restart-kokoro)
+    # Kokoro だけを再起動して、ため込んだメモリを手放す(字幕の窓のボタンからも呼ばれる)。
+    # Kokoro は、文の長さが変わるたびに GPU 用の計算の手順を組み立てて取っておくため、使うほどメモリが増える。
+    # 再起動の間の読み上げは、listen.py が、戻るまで待ってから行う。
+    if [ -f "$RESTARTING" ] && [ $(( $(date +%s) - $(stat -f %m "$RESTARTING") )) -lt 180 ]; then
+      echo "kokoro: すでに再起動しています"; exit 0
+    fi
+    check_privacy
+    echo $$ > "$RESTARTING"
+    trap 'rm -f "$RESTARTING"' EXIT
+    before=$(kokoro_memory)
+    "$VM" service stop kokoro >/dev/null 2>&1
+    for _ in $(seq 1 20); do [ -z "$(listen_addr 8880)" ] && break; sleep 0.5; done
+    [ -z "$(listen_addr 8880)" ] || die "kokoro が停止しませんでした(ポート 8880 が使用中)"
+    start_one kokoro "$KOKORO_URL" 8880
+    echo "kokoro のメモリ: ${before:-不明} → $(kokoro_memory)"
     ;;
   review)
     # 話し方の分析のために、1 日分の会話の文字から、利用者の発言と数の集計を取り出す(日付を省くと今日)。
@@ -249,7 +287,7 @@ case "${1:-}" in
     esac
     ;;
   *)
-    echo "使い方: $0 on | off | status | listen [引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off" >&2
+    echo "使い方: $0 on | off | status | restart-kokoro | listen [引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off" >&2
     exit 2
     ;;
 esac

@@ -1,6 +1,6 @@
 // 字幕の窓: 字幕と、セッションの置き場所を、画面に浮かぶ小さな窓へ表示する。
 //
-// 使い方: caption <字幕のフォルダ> <セッションの記録>
+// 使い方: caption <字幕のフォルダ> <セッションの記録> [voice.sh のパス]
 // - 字幕のフォルダには日付ごとのファイル(YYYY-MM-DD.txt)が入り、いちばん新しい日のものを表示する。
 //   1 行 1 発言で、「時刻<TAB>セッション名<TAB>話し手<TAB>本文」の形(listen.py が書く)
 // - セッションの記録は JSON で、セッションごとの置き場所(いま話す / あとで)と状態、話す相手が入る
@@ -24,12 +24,14 @@
 // - 右上の「◐」を押すと、窓の色を、暗い色と明るい色で切り替える(選んだ色は覚えておく)
 // - 右上の「?」を押すと、使い方の一覧を表示する。もう一度押すと、字幕に戻る
 // - 右上の × で隠せる。隠しても、次の読み上げや発言でまた出る
-// - 表示と、置き場所の書き換えだけを行う。どこにも送信しない
+// - 上の帯の「メモリ」に、読み上げ(Kokoro)が使っているメモリを出す。決めた量を超えると色が変わる。
+//   押すと Kokoro を再起動して、ため込んだメモリを手放す(voice.sh restart-kokoro を呼ぶ)
+// - 表示と、置き場所の書き換えと、Kokoro の再起動だけを行う。どこにも送信しない
 
 import AppKit
 
 guard CommandLine.arguments.count > 2 else {
-    FileHandle.standardError.write("使い方: caption <字幕のフォルダ> <セッションの記録>\n".data(using: .utf8)!)
+    FileHandle.standardError.write("使い方: caption <字幕のフォルダ> <セッションの記録> [voice.sh のパス]\n".data(using: .utf8)!)
     exit(2)
 }
 let captionDir = CommandLine.arguments[1]
@@ -38,6 +40,10 @@ let sessionsPath = CommandLine.arguments[2]
 let stateDir = (sessionsPath as NSString).deletingLastPathComponent
 let playbackPath = stateDir + "/10-voice-playback.json"
 let seekPath = stateDir + "/10-voice-seek.json"
+let voiceScript: String? = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : nil
+let restartingPath = stateDir + "/10-voice-kokoro-restarting"   // voice.sh restart-kokoro の間だけある
+let kokoroWarnBytes: UInt64 = 6 << 30   // これを超えたら、メモリの表示の色を変える
+let memorySeconds: TimeInterval = 3     // メモリを測る間隔
 let maxShownEntries = 300  // 表示するのは直近の分だけ。ファイルには全部残る
 let allTab = "すべて"
 let userName = "あなた"
@@ -68,6 +74,7 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("◐", "窓の色を、暗い色と明るい色で切り替える"),
         ("読み上げの位置のつまみ(左下)", "読み上げ中は進む。動かすと、その位置から読み直す。返事を待っている間だけ使える。字幕は、読み終えた部分が明るくなる"),
         ("1x / 1.25x", "読み上げの速さを切り替える。途中で押すと、少し戻って、新しい速さで読む"),
+        ("メモリ", "読み上げ(Kokoro)が使っているメモリ。使うほど増え、6GB を超えると色が変わる。押すと Kokoro を再起動して戻す(10 秒ほど。その間の読み上げは、戻るまで待つ)"),
         ("⏸ 停止 / ▶ 再開", "すべてのセッションが、話すのも聞くのもやめる(会議のとき)"),
         ("×", "隠す。次の読み上げや発言でまた出る"),
         ("帯をつかむ / 右下のつまみ", "動かす / 大きさを変える"),
@@ -89,6 +96,34 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("「終わり」と言う", "音声の会話を終える"),
     ]),
 ]
+
+/// Kokoro(ポート 8880 で待ち受けているプロセス)の番号を探す
+func findKokoroPid() -> pid_t? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+    p.arguments = ["-tnP", "-iTCP:8880", "-sTCP:LISTEN"]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return nil }
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return String(data: data, encoding: .utf8)?.split(separator: "\n").first.flatMap { pid_t($0) }
+}
+
+/// プロセスが実際に使っているメモリ(圧縮・退避された分を含む。アクティビティモニタの「メモリ」と同じ)
+func physFootprint(_ pid: pid_t) -> UInt64? {
+    var info = rusage_info_v2()
+    let r = withUnsafeMutablePointer(to: &info) { p in
+        p.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V2, $0) }
+    }
+    return r == 0 ? info.ri_phys_footprint : nil
+}
+
+func formatBytes(_ b: UInt64) -> String {
+    let gb = Double(b) / Double(1 << 30)
+    return gb >= 10 ? String(format: "%.0fGB", gb) : String(format: "%.1fGB", gb)
+}
 
 /// 窓の色。裏の画面に合わせて、暗い色と明るい色を切り替える
 struct Theme {
@@ -428,6 +463,11 @@ final class CaptionController: NSObject {
     let themeButton = NSButton(frame: .zero)
     let modeButton = NSButton(frame: .zero)
     var mode = "key"
+    let memoryButton = NSButton(frame: .zero)
+    var kokoroPid: pid_t? = nil
+    var kokoroBytes: UInt64? = nil
+    var restartPressedAt = Date.distantPast   // 押した直後は、印ができる前でも「再起動中」と出す
+    var measuring = false
     let closeButton = NSButton(frame: .zero)
 
     override init() {
@@ -570,7 +610,81 @@ final class CaptionController: NSObject {
         modeButton.autoresizingMask = [.minXMargin]
         bar.addSubview(modeButton)
         mode = loadMode()
+
+        memoryButton.frame = NSRect(x: bar.bounds.width - 376, y: 5, width: 80, height: 20)
+        memoryButton.isBordered = false
+        memoryButton.wantsLayer = true
+        memoryButton.layer?.cornerRadius = 6
+        memoryButton.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        memoryButton.target = self
+        memoryButton.action = #selector(restartKokoro(_:))
+        memoryButton.autoresizingMask = [.minXMargin]
+        bar.addSubview(memoryButton)
         applyTheme()
+        measureMemory()
+        Timer.scheduledTimer(withTimeInterval: memorySeconds, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.measureMemory() }
+        }
+    }
+
+    var restarting: Bool {
+        if Date().timeIntervalSince(restartPressedAt) < 3 { return true }
+        guard let attr = try? FileManager.default.attributesOfItem(atPath: restartingPath),
+              let m = attr[.modificationDate] as? Date else { return false }
+        return Date().timeIntervalSince(m) < 180   // 再起動の命令が異常終了して残った印は見ない
+    }
+
+    /// Kokoro のメモリを測る。番号を探すのに外部の命令を使うので、メインスレッドの外で行う
+    func measureMemory() {
+        if measuring { return }
+        measuring = true
+        let known = kokoroPid
+        DispatchQueue.global(qos: .utility).async {
+            var pid = known
+            if pid == nil || kill(pid!, 0) != 0 { pid = findKokoroPid() }
+            let bytes = pid.flatMap { physFootprint($0) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.kokoroPid = bytes == nil ? nil : pid
+                    self.kokoroBytes = bytes
+                    self.measuring = false
+                    self.styleMemory()
+                }
+            }
+        }
+    }
+
+    func styleMemory() {
+        memoryButton.contentTintColor = theme.fg
+        if restarting {
+            memoryButton.title = "再起動中…"
+            memoryButton.layer?.backgroundColor = theme.fg.withAlphaComponent(0.35).cgColor
+            memoryButton.toolTip = "読み上げ(Kokoro)を再起動している。その間の読み上げは、戻るまで待つ"
+        } else if let b = kokoroBytes {
+            memoryButton.title = "メモリ " + formatBytes(b)
+            memoryButton.layer?.backgroundColor = b > kokoroWarnBytes
+                ? theme.waiting.withAlphaComponent(0.55).cgColor
+                : theme.fg.withAlphaComponent(0.14).cgColor
+            memoryButton.toolTip = "読み上げ(Kokoro)が使っているメモリ。使うほど増える。"
+                + (voiceScript == nil ? "再起動するには、/10-voice をもう一度実行してから押す"
+                                      : "押すと Kokoro を再起動して戻す(10 秒ほど。その間の読み上げは、戻るまで待つ)")
+        } else {
+            memoryButton.title = "メモリ —"
+            memoryButton.layer?.backgroundColor = theme.fg.withAlphaComponent(0.14).cgColor
+            memoryButton.toolTip = "読み上げ(Kokoro)が動いていない"
+        }
+    }
+
+    @objc func restartKokoro(_ sender: Any?) {
+        guard let script = voiceScript, !restarting, kokoroBytes != nil else { return }
+        restartPressedAt = Date()
+        styleMemory()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [script, "restart-kokoro"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()   // 終わるのは待たない。表示は、印のファイルと測ったメモリで変わる
     }
 
     @objc func toggleMode(_ sender: Any?) {
@@ -609,6 +723,7 @@ final class CaptionController: NSObject {
         styleHelp()
         styleSpeed()
         styleMode()
+        styleMemory()
         bar.needsDisplay = true
         panel.contentView?.needsDisplay = true
     }
@@ -812,7 +927,7 @@ final class CaptionController: NSObject {
         bar.zones = zones
         // タブが、右側のボタンに重ならないようにする。窓の最小の幅を、タブとボタンが並ぶ幅にし、
         // いまの幅が足りなければ、窓を広げる
-        let needed = x + 300
+        let needed = x + 390
         panel.minSize = NSSize(width: max(420, needed), height: 100)
         if panel.frame.width < needed {
             var f = panel.frame
