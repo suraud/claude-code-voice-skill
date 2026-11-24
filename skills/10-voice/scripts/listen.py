@@ -1291,6 +1291,9 @@ def stop_check() -> int:
     - 最後に声で話してから、STOP_CHECK_RECENT_S を過ぎている
     - 読み上げのサービスが動いていない
     - 聞き取りが動いている(バックグラウンドで順番を待っている場合を含む)
+    - 裏で走っているタスク(サブエージェント、バックグラウンドのコマンド)がある。
+      完了の通知でセッションは起こされるので、声が届かなくなることはない。
+      裏の作業を待つ間に聞き取りを張ると、利用者が話し終えるまで順番を持ち続け、ほかのセッションが話せなくなる
     """
     try:
         data = json.loads(sys.stdin.read() or "{}")
@@ -1307,9 +1310,8 @@ def stop_check() -> int:
         return 0
     if me.get("lpid") and pid_alive(me["lpid"]):
         return 0  # 聞き取りが動いている
-    for task in data.get("background_tasks") or []:
-        if isinstance(task, dict) and "listen" in str(task.get("command", "")) and "voice.sh" in str(task.get("command", "")):
-            return 0  # バックグラウンドで、聞き取りが順番を待っている
+    if data.get("background_tasks"):
+        return 0  # 裏で走っているタスクがある(バックグラウンドで順番を待つ聞き取りを含む)
     try:
         import socket
 
@@ -1322,6 +1324,8 @@ def stop_check() -> int:
         "reason": "音声会話の途中です。聞き取りを呼ばずにターンを終えると、利用者の声が届かなくなります。"
                   "voice.sh listen --say '…' で聞き取りに戻ってください(利用者に操作を頼んだなら、完了の返事を聞き取る。"
                   "順番が来ないなら、--wait 21600 を付けてバックグラウンドで実行する)。"
+                  "裏で走っている作業の完了を待つだけで、利用者に聞くことがないなら、聞き取りは張らず、"
+                  "voice.sh say '…結果が出たら声をかけます' で一言伝えてから、ターンを終えてよい。"
                   "利用者が音声の終了を望んでいるなら、voice.sh end を実行してください。",
     }, ensure_ascii=False))
     return 0
