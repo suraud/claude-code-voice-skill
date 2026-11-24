@@ -237,7 +237,7 @@ def sessions_update(name: str, state: str | None = None) -> dict:
                 me["t"] = int(time.time())
                 # 待っている、話している間は、聞き取りのプロセス番号を残す。プロセスが消えたら、
                 # 字幕の窓が「待っている」表示をやめる(声をあきらめたセッションを、待機中に見せないため)
-                if state in ("waiting", "talking"):
+                if state in ("waiting", "talking", "standby"):
                     me["lpid"] = os.getpid()
                 else:
                     me.pop("lpid", None)
@@ -287,6 +287,29 @@ def session_end(name: str) -> None:
         pass
 
 
+def kokoro_restarting() -> bool:
+    """Kokoro を再起動している途中か。再起動の命令が異常終了して残った古い印は、見ない(voice.sh、caption.swift と同じ 180 秒)。"""
+    try:
+        return time.time() - os.path.getmtime(KOKORO_RESTARTING) < 180
+    except OSError:
+        return False
+
+
+def clear_focus(name: str) -> None:
+    """話す相手がこのセッションなら、選んでいない状態(「すべて」)に戻す。"""
+    try:
+        with open(SESSIONS_PATH, "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            data = json.loads(f.read() or "{}")
+            if data.get("focus") == name:
+                data.pop("focus")
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(data, ensure_ascii=False))
+    except (OSError, ValueError):
+        pass
+
+
 def may_speak(sessions: dict, name: str) -> bool:
     """置き場所と、話す相手の決まりで、いま話しかけてよいか。
 
@@ -321,7 +344,7 @@ def write_floor(f, name: str, active: bool) -> None:
 _cancelled = threading.Event()  # 止める指示(SIGTERM、SIGINT)を受けた
 
 
-def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S):
+def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S, on_select: bool = False):
     """順番を取る。戻り値は (ロックのファイル, 直前に使ったのが別のセッションか, 待った秒数)。
 
     ロックは 2 段になっている。
@@ -331,15 +354,20 @@ def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S):
       同じセッションが聞き取りを再開しないまま FLOOR_HOLD_S 秒たつと、ほかのセッションも話せる
     - 「以上」で話し終えたあと(Claude が作業している間)は、早い者勝ちで、ほかのセッションも話せる
 
+    on_select のときは、利用者が字幕の窓でこのセッションのタブを押す(話す相手に選ぶ)まで待つ。
+    待っている間は「待機」(順番待ちとは別の色)にして、ほかのセッションの順番を妨げない。
     wait_s 秒待っても取れなければ (None, False, 待った秒数) を返す。
     """
     start = time.time()
     f = open(LOCK_PATH, "a+", encoding="utf-8")
     os.chmod(LOCK_PATH, 0o600)
-    sessions_update(name, "waiting")
+    sessions_update(name, "standby" if on_select else "waiting")
     while True:
         try:
-            if not may_speak(sessions_update(name), name):
+            sessions = sessions_update(name)
+            if on_select and _flags["focus"] != name:
+                raise BlockingIOError  # まだタブを押されていない
+            if not may_speak(sessions, name):
                 raise BlockingIOError  # 置き場所の決まりで、まだ話せない
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             holder, last, active = read_floor(f)
@@ -865,12 +893,12 @@ class Speaker:
                     json={"model": "tts-1", "voice": KOKORO_VOICE, "input": text, "response_format": "pcm", "speed": speed},
                     timeout=120,
                 )
-                if r.status_code >= 500 and os.path.exists(KOKORO_RESTARTING):
+                if r.status_code >= 500 and kokoro_restarting():
                     raise httpx.RemoteProtocolError("再起動中")
                 r.raise_for_status()
                 return r.content
             except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError):
-                if time.monotonic() > deadline or self.cancel.is_set() or not os.path.exists(KOKORO_RESTARTING):
+                if time.monotonic() > deadline or self.cancel.is_set() or not kokoro_restarting():
                     raise
                 time.sleep(1)
 
@@ -1317,7 +1345,7 @@ def stop_check() -> int:
 
         socket.create_connection(("127.0.0.1", 8880), timeout=0.5).close()
     except OSError:
-        if not os.path.exists(KOKORO_RESTARTING):
+        if not kokoro_restarting():
             return 0  # 読み上げのサービスが止まっている(再起動の途中なら、動いているものとして扱う)
     print(json.dumps({
         "decision": "block",
@@ -1325,7 +1353,8 @@ def stop_check() -> int:
                   "voice.sh listen --say '…' で聞き取りに戻ってください(利用者に操作を頼んだなら、完了の返事を聞き取る。"
                   "順番が来ないなら、--wait 21600 を付けてバックグラウンドで実行する)。"
                   "裏で走っている作業の完了を待つだけで、利用者に聞くことがないなら、聞き取りは張らず、"
-                  "voice.sh say '…結果が出たら声をかけます' で一言伝えてから、ターンを終えてよい。"
+                  "voice.sh say '…結果が出たら声をかけます' で一言伝え、voice.sh listen --on-select --wait 21600 --say 'はい、どうぞ' を"
+                  "バックグラウンドで実行してから、ターンを終えてよい(SKILL.md の「裏の作業を待つとき」)。"
                   "利用者が音声の終了を望んでいるなら、voice.sh end を実行してください。",
     }, ensure_ascii=False))
     return 0
@@ -1437,6 +1466,7 @@ def main() -> int:
     ap.add_argument("--no-reply", action="store_true", help="読み上げるだけで、聞き取らずに終わる。順番も手放す(返事のいらない一言に使う。voice.sh say が付ける)")
     ap.add_argument("--name", default=session_name(), help="このセッションの呼び名(既定: 作業フォルダの名前)")
     ap.add_argument("--mode", choices=("key", "word"), default=None, help="聞き取りの方式。key: キーを押している間だけ聞く。word: 合言葉が聞こえるまで聞く。指定しなければ、字幕の窓で選ばれている方式(選ばれていなければ key)。検証のとき以外は指定しない")
+    ap.add_argument("--on-select", action="store_true", help="利用者が字幕の窓でこのセッションのタブを押すまで、読み上げも聞き取りもせずに待つ(裏の作業を待つ間に、声で話しかけられるようにする。--wait と一緒に、バックグラウンドで使う)。終わったら、話す相手の選択を外す")
     ap.add_argument("--wait", type=float, default=LOCK_WAIT_S, help=f"話す順番を待つ秒数の上限(既定: {LOCK_WAIT_S})。バックグラウンドで長く待つときに大きくする")
     ap.add_argument("--end-word", default="以上", help="発言の終わりを示す合言葉(既定: 以上)")
     ap.add_argument("--idle", type=float, default=300, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 300)")
@@ -1619,10 +1649,14 @@ def main() -> int:
             # 利用者がミュートにしている(聞き取り中、または作業中に「ミュート」と言った)。話しかけない
             print("[ミュート: 利用者がミュートにしています。読み上げていません。声で呼びかけず、画面に「再開するときは /10-voice と入力してください」と書いて待ってください。利用者が再開を頼んだら、voice.sh on を実行してから聞き取りを始めます]")
             return 0
-        lock, switched, waited = acquire_turn(args.name, args.wait)
+        lock, switched, waited = acquire_turn(args.name, args.wait, args.on_select)
         if lock is None and _cancelled.is_set():
             sessions_update(args.name, "working")
             print("[中断されました]")
+            return 0
+        if lock is None and args.on_select:
+            sessions_update(args.name, "working")
+            print("[待機の終わり: 時間内にタブが押されませんでした。読み上げていません]")
             return 0
         if lock is None:
             print("[順番待ち: まだ話せません(ほかのセッションが会話中、利用者が別のセッションを話す相手に選んでいる、このセッションが「あとで」に置かれている、停止ボタンが押されている、のいずれか)。読み上げていません]")
@@ -1878,6 +1912,8 @@ def main() -> int:
         # 保留や停止で止まったセッションは、まだ話したいことがある。作業中(灰色)ではなく、順番待ち(橙)にする
         after = "muted" if reason == "mute" else "waiting" if reason in ("yield", "paused") else "working"
         sessions_update(args.name, after)
+        if args.on_select:
+            clear_focus(args.name)  # タブを押して話しかけた用は済んだ。ほかのセッションも、順番に話せるようにする
     if not from_file:
         if reason != "said":
             play(CUE_END)

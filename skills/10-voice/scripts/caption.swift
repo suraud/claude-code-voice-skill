@@ -11,7 +11,8 @@
 //   タブを押すと、そのセッションが話す相手になる。字幕もそのセッションのものに切り替わり、
 //   ほかのセッションは、話すのも聞くのもやめて待つ。「すべて」を押すと、相手を選ばない状態に戻り、
 //   「いま話す」のセッションが順番に話す。つまんで別の区画へ落とすと、置き場所が変わる
-// - タブの丸印は状態を表す。緑: 話している、聞いている。橙: 話したくて待っている
+// - タブの丸印は状態を表す。緑: 話している、聞いている。橙: 話したくて待っている。
+//   青の輪: 裏の作業を待っている。タブを押すと、そのセッションが聞き取りに入る(声で話しかけられる)
 // - Claude の発言は青、利用者の発言は黄で色分けする。古い発言は薄く表示する
 // - 帯の空いているところをつかむと動かせる。右下のつまみを引くと大きさを変えられる
 // - 右上の停止ボタンを押すと、すべてのセッションが話すのも聞くのもやめる(会議のときなど)。
@@ -68,7 +69,8 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("タブを押す", "そのセッションが話す相手になる。ほかのセッションは止まって待つ"),
         ("「すべて」を押す", "相手を選ばない。「いま話す」のセッションが順番に話す"),
         ("タブをつまんで移す", "「あとで」に置くと、戻すまで話しかけてこない"),
-        ("丸の色", "緑: 会話中　橙: 話したくて待っている　灰: 作業中、または声では待っていない(画面を見る)"),
+        ("丸の色", "緑: 会話中　橙: 話したくて待っている　青の輪: 裏の作業を待っている(押すと話しかけられる)　灰: 作業中、または声では待っていない(画面を見る)"),
+        ("青の輪のタブを押す", "そのセッションが「はい、どうぞ」と聞き取りに入る。作業を止める、などを声で伝えられる。話し終えると、「すべて」に戻る"),
     ]),
     ("窓", [
         ("◐", "窓の色を、暗い色と明るい色で切り替える"),
@@ -248,7 +250,7 @@ func loadSessions() -> [String: SessionInfo] {
         var state = v["state"] as? String ?? ""
         // 「待っている」「話している」のに、聞き取りのプロセスがもう動いていなければ、灰色にする
         // (声をあきらめて、画面で待っているセッション)
-        if let lpid = v["lpid"] as? Int, lpid > 0, state == "waiting" || state == "talking",
+        if let lpid = v["lpid"] as? Int, lpid > 0, state == "waiting" || state == "talking" || state == "standby",
            kill(pid_t(lpid), 0) != 0 && errno == ESRCH { state = "" }
         out[name] = SessionInfo(lane: lanes.contains { $0.key == lane } ? lane : "normal", state: state)
     }
@@ -322,7 +324,16 @@ final class TabChip: NSView {
     let name: String
     let draggable: Bool
     var selected = false { didSet { needsDisplay = true } }
-    var state = "" { didSet { needsDisplay = true } }
+    var state = "" {
+        didSet {
+            needsDisplay = true
+            if draggable {
+                toolTip = state == "standby"
+                    ? "裏の作業を待っている。押すと、このセッションが聞き取りに入り、声で話しかけられる。話し終えると「すべて」に戻る"
+                    : "押すと、このセッションが話す相手になる(ほかのセッションは待つ)。つまんで、いま話す・あとで へ落とすと移る"
+            }
+        }
+    }
     var onClick: ((String) -> Void)?
     var onDragMove: ((TabChip) -> Void)?
     var onDrop: ((TabChip) -> Void)?
@@ -352,10 +363,20 @@ final class TabChip: NSView {
             switch state {
             case "talking": dot = theme.talking
             case "waiting": dot = theme.waiting
+            case "standby": dot = theme.claude
             default: dot = theme.fg.withAlphaComponent(0.25)
             }
-            dot.setFill()
-            NSBezierPath(ovalIn: NSRect(x: 7, y: 6.5, width: 7, height: 7)).fill()
+            let oval = NSRect(x: 7, y: 6.5, width: 7, height: 7)
+            if state == "standby" {
+                // 裏の作業を待っている。押すと話しかけられることを、輪で示す
+                dot.setStroke()
+                let ring = NSBezierPath(ovalIn: oval.insetBy(dx: 0.75, dy: 0.75))
+                ring.lineWidth = 1.5
+                ring.stroke()
+            } else {
+                dot.setFill()
+                NSBezierPath(ovalIn: oval).fill()
+            }
             x = 20
         }
         (name as NSString).draw(at: NSPoint(x: x, y: 2.5), withAttributes: [
