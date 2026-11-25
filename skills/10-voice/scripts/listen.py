@@ -979,7 +979,8 @@ class Speaker:
             if self.error:
                 result = "失敗 " + self.error[:80]
             elif started is None:
-                result = "音を出す前に止めた"
+                # 止めた理由も残す。聞き取りの終わり(保留、停止、中断など)か、キーでの割り込みか
+                result = "音を出す前に止めた(" + ("聞き取りの終わり" if self.closed.is_set() else "キー") + ")"
             elif self.cancel.is_set() or self.closed.is_set():
                 result = "途中で止めた"
             else:
@@ -1163,20 +1164,20 @@ class Speaker:
         device = ""
         try:
             self.ready.wait()
-            if self.error or self.cancel.is_set():
-                return
-            speak_lock, out = self._open(sd)
-            if out is None:
-                return
-            try:
-                device = str(sd.query_devices(kind="output").get("name", ""))
-            except Exception:
-                device = "不明"
-            started = time.time()
-            with speak_lock, out:
-                # 音が出始めるここで、Kokoro のメモリが増えていたら再起動する。読み上げを遅らせないよう、別のスレッドで調べる
-                threading.Thread(target=auto_restart_kokoro, daemon=True).start()
-                self._run(out, 0, True)
+            # 音を出す前に止められたとき(音声を作っている間にキーが押された、など)も、ここで終わらない。
+            # 下の「読み終えたあと」へ進み、読み上げを続ける指示(resume)とつまみに応じる。
+            # ここで終わると、続きを読む処理が動かず、字幕だけが出て、声が出ないままになる
+            speak_lock, out = (None, None) if self.error or self.cancel.is_set() else self._open(sd)
+            if out is not None:
+                try:
+                    device = str(sd.query_devices(kind="output").get("name", ""))
+                except Exception:
+                    device = "不明"
+                started = time.time()
+                with speak_lock, out:
+                    # 音が出始めるここで、Kokoro のメモリが増えていたら再起動する。読み上げを遅らせないよう、別のスレッドで調べる
+                    threading.Thread(target=auto_restart_kokoro, daemon=True).start()
+                    self._run(out, 0, True)
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
         finally:
@@ -1937,8 +1938,10 @@ def main() -> int:
         total_ticks += 1
         elapsed += FRAME_S
         if key_mode:
-            # 読み上げ中は、キーを長めに押したときだけ、話すための操作とみなす
-            _hold["settle"] = BARGE_SETTLE_S if speaker and speaker.playing else KEY_SETTLE_S
+            # 読み上げ中は、キーを長めに押したときだけ、話すための操作とみなす。
+            # 音が出る前(音声を作っている間)も、読み上げ中に含める。字幕はもう出ていて、
+            # ここで短く触れただけで止まると、声が出ないままになる
+            _hold["settle"] = BARGE_SETTLE_S if speaker and (speaking or speaker.playing) else KEY_SETTLE_S
             down = talk_held()
             if frame is not None:
                 # マイクが開き、合図が鳴ったあとの音声。ここから録る(声の判定を待つと、話し始めが欠ける)
