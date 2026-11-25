@@ -546,6 +546,11 @@ def numbered_name(base: str) -> str:
     rec = read_record() or {}
     sessions = rec.get("sessions") if same_boot(rec.get("boot")) and isinstance(rec.get("sessions"), dict) else {}
     pid = claude_pid(sessions)
+    given = rec.get("names") if isinstance(rec.get("names"), dict) and same_boot(rec.get("boot")) else {}
+    if pid is not None and isinstance(given.get(str(pid)), str) and given[str(pid)]:
+        # 利用者が、このセッションに名前を付けている(voice.sh on 名前)。フォルダの名前より優先する
+        _names[base] = given[str(pid)]
+        return _names[base]
     if pid is not None:
         taken: dict[int, list[int]] = {}   # 番号(番号なしは 1) → その名前を使っている Claude Code
         for key, entry in sessions.items():
@@ -564,10 +569,89 @@ def numbered_name(base: str) -> str:
     return name
 
 
+NAME_MAX = 20   # 付けられる名前の長さ(タブに収まる長さ)
+
+
+def session_rename(old: str, wanted: str) -> int:
+    """利用者が決めた名前を、このセッション(この Claude Code)に付ける。字幕の窓のタブと、名乗りに使われる。
+
+    名前は、この Claude Code が終わるまで有効(会話を終えて、始め直しても残る)。記録の names に、
+    プロセス番号ごとに持つ。ほかの動いているセッションが同じ名前を使っていたら、番号を付ける。
+    """
+    wanted = " ".join(wanted.split())[:NAME_MAX].strip()
+    if not wanted:
+        print("エラー: 名前を指定してください", file=sys.stderr)
+        return 2
+    try:
+        fd = os.open(SESSIONS_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                data = json.loads(f.read() or "{}")
+            except ValueError:
+                data = {}
+            if not same_boot(data.get("boot")) or not isinstance(data.get("sessions"), dict):
+                keep = {k: data[k] for k in ("mode", "speed", "mic") if k in data}
+                data = {"boot": boot_id(), "sessions": {}, **keep}
+            sessions = data["sessions"]
+            pid = claude_pid(sessions)
+            if pid is None:
+                print("エラー: Claude Code の中から実行してください(セッションを見分けられません)", file=sys.stderr)
+                return 2
+            names = {k: v for k, v in (data.get("names") or {}).items()
+                     if str(k).isdigit() and pid_alive(k) and isinstance(v, str)}   # 終わった Claude Code の名前は捨てる
+            names.pop(str(pid), None)
+
+            def in_use(name: str) -> bool:
+                if name in names.values():
+                    return True
+                return name != old and any(p != pid and pid_alive(p) for p in _pids_of(sessions.get(name)))
+
+            final, n = wanted, 1
+            while in_use(final):
+                n += 1
+                final = f"{wanted} {n}"
+            names[str(pid)] = final
+            data["names"] = names
+            if final != old:
+                entry = sessions.get(old)
+                others = [p for p in _pids_of(entry) if p != pid and pid_alive(p)]
+                if isinstance(entry, dict) and not others:
+                    sessions.pop(old)             # いままでの名前のタブを、新しい名前に付け替える
+                    entry = dict(entry)
+                else:
+                    if isinstance(entry, dict):   # 同じ名前を、ほかの Claude Code も使っている。そちらは残す
+                        entry["pids"] = others
+                        entry.pop("pid", None)
+                    entry = {"lane": "normal", "state": "", "t": 0}
+                entry.pop("pid", None)
+                entry.pop("lpid", None)
+                entry["pids"] = [pid]
+                sessions[final] = entry
+                if data.get("focus") == old and old not in sessions:
+                    data["focus"] = final
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps(data, ensure_ascii=False))
+    except OSError as e:
+        print(f"エラー: 名前を付けられませんでした: {e}", file=sys.stderr)
+        return 1
+    if final != old:
+        release_turn(old)   # いままでの名前で持っていた順番を、残さない
+        try:
+            os.replace(os.path.join(MEMO_DIR, old + ".txt"), os.path.join(MEMO_DIR, final + ".txt"))  # 預かったメモを引き継ぐ
+        except OSError:
+            pass
+    _names.clear()
+    print(f"セッションの名前を「{final}」にしました(字幕の窓のタブと、名乗りに使います)")
+    return 0
+
+
 def session_name(path: str | None = None) -> str:
     """このセッションの名前。Claude Code を始めたフォルダの名前から、先頭の番号と記号を除いたもの(例: 10_設計 → 設計)。
 
     同じ名前のセッションが、ほかの Claude Code で動いていれば、番号が付く(numbered_name)。
+    利用者が名前を付けていれば(session_rename)、その名前。
     """
     base = os.path.basename((path or project_dir()).rstrip("/"))
     return numbered_name(re.sub(r"^[\d_\-\s]+", "", base) or base)
@@ -1767,6 +1851,7 @@ def main() -> int:
     ap.add_argument("--yomi", nargs="+", metavar="語", help="利用者の読みがなの表に足す。表記、読み、(あれば)聞き間違いの順に指定する。同じ表記があれば書き換える")
     ap.add_argument("--mic", choices=("builtin", "default"), help="聞き取りに使うマイクを選ぶ。builtin: Mac 本体のマイク。default: 既定の入力(イヤホンなど)。全セッションで共通")
     ap.add_argument("--print-mode", action="store_true", help="いま選ばれている聞き取りの方式を表示する(voice.sh on と status が呼ぶ)")
+    ap.add_argument("--rename", metavar="名前", help="このセッションに名前を付ける(字幕の窓のタブと、名乗りに使う。voice.sh on 名前 が呼ぶ)")
     ap.add_argument("--unmute", action="store_true", help="このセッションのミュートを解く(voice.sh on が呼ぶ)")
     ap.add_argument("--reset", action="store_true", help="セッションの記録、話す相手、停止の状態、話す順番を空にする(voice.sh off が呼ぶ)。方式、速さ、マイクの選択は残す")
     ap.add_argument("--cancel", action="store_true", help="このセッションの、動いている聞き取り(バックグラウンドで待っているものを含む)を止める")
@@ -1783,7 +1868,7 @@ def main() -> int:
         return stop_check()
     if args.reset:
         rec = read_record() or {}
-        keep = {k: rec[k] for k in ("mode", "speed", "mic") if k in rec}
+        keep = {k: rec[k] for k in ("mode", "speed", "mic", "names") if k in rec}   # 付けた名前は、サービスを止めても残す
         fd = os.open(SESSIONS_PATH, os.O_RDWR | os.O_CREAT, 0o600)
         with os.fdopen(fd, "r+", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
@@ -1827,6 +1912,8 @@ def main() -> int:
         else:
             print("マイク: 既定の入力(イヤホンなど)")
         return 0
+    if args.rename is not None:
+        return session_rename(args.name, args.rename)
     if args.unmute:
         if sessions_update(args.name).get(args.name, {}).get("state") == "muted":
             session_set_state(args.name, "working")

@@ -1,6 +1,6 @@
 #!/bin/bash
 # 音声会話用のローカルサービス(Whisper、Kokoro)を切り替える。
-# 使い方: voice.sh on | off | status | restart-kokoro | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off
+# 使い方: voice.sh on [名前] | off | status | restart-kokoro | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
 
@@ -174,6 +174,8 @@ case "${1:-}" in
     start_one kokoro "$KOKORO_URL" 8880
     caption_on
     memo_on
+    # 名前が渡されたら、このセッションに付ける(字幕の窓のタブと、名乗りに使う)
+    if [ -n "${2:-}" ]; then "$PY" "$(dirname "$0")/listen.py" --rename "$2"; fi
     "$PY" "$(dirname "$0")/listen.py" --unmute 2>/dev/null   # このセッションがミュート中なら、解く
     "$PY" "$(dirname "$0")/listen.py" --print-mode 2>/dev/null
     ;;
