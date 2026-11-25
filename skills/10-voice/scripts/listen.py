@@ -488,10 +488,89 @@ def project_dir() -> str:
     return os.getcwd()
 
 
+def _pids_of(entry) -> list[int]:
+    """セッションの記録にある、Claude Code のプロセス番号(古い形の pid も含める)。"""
+    if not isinstance(entry, dict):
+        return []
+    pids = list(entry.get("pids") or [])
+    if entry.get("pid"):
+        pids.append(entry["pid"])
+    return [int(p) for p in pids if str(p).isdigit()]
+
+
+def claude_pid(sessions: dict) -> int | None:
+    """このコマンドを動かしている Claude Code のプロセス番号。分からなければ None。
+
+    Claude Code がコマンドを実行するときは、環境変数で渡される。hook から呼ばれたときは、
+    渡されないことがあるので、親のプロセスをたどって、記録にある番号か、claude という名前のものを探す。
+    """
+    pid = os.environ.get("CLAUDE_PID", "")
+    if pid.isdigit():
+        return int(pid)
+    known = {p for v in sessions.values() for p in _pids_of(v)}
+    named = None
+    cur = os.getpid()
+    for _ in range(8):
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(cur)],
+                                 capture_output=True, text=True, timeout=3).stdout.split(None, 1)
+        except (OSError, subprocess.SubprocessError):
+            break
+        if not out or not out[0].isdigit() or int(out[0]) <= 1:
+            break
+        cur = int(out[0])
+        if cur in known:
+            return cur
+        try:
+            comm = subprocess.run(["ps", "-o", "comm=", "-p", str(cur)],
+                                  capture_output=True, text=True, timeout=3).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            break
+        if named is None and os.path.basename(comm) == "claude":
+            named = cur
+    return named
+
+
+_names: dict[str, str] = {}
+
+
+def numbered_name(base: str) -> str:
+    """同じ名前のセッションが、ほかの Claude Code で動いていたら、番号を付けた名前にする(設計 2、設計 3)。
+
+    同じフォルダから Claude Code を 2 つ開いても、別のセッションとして扱うため(タブ、順番、メモ、中断を分ける)。
+    見分けには、Claude Code のプロセス番号を使う。一度付いた名前は、記録に残っている間、変わらない。
+    """
+    if base in _names:
+        return _names[base]
+    name = base
+    rec = read_record() or {}
+    sessions = rec.get("sessions") if same_boot(rec.get("boot")) and isinstance(rec.get("sessions"), dict) else {}
+    pid = claude_pid(sessions)
+    if pid is not None:
+        taken: dict[int, list[int]] = {}   # 番号(番号なしは 1) → その名前を使っている Claude Code
+        for key, entry in sessions.items():
+            m = re.fullmatch(re.escape(base) + r"(?: (\d+))?", key)
+            if m:
+                taken[int(m.group(1) or 1)] = _pids_of(entry)
+        mine = [n for n, pids in taken.items() if pid in pids]
+        if mine:
+            n = min(mine)
+        else:
+            n = 1
+            while any(pid_alive(p) for p in taken.get(n, [])):
+                n += 1
+        name = base if n == 1 else f"{base} {n}"
+    _names[base] = name
+    return name
+
+
 def session_name(path: str | None = None) -> str:
-    """Claude Code を始めたフォルダの名前から、先頭の番号と記号を除いたもの(例: 10_設計 → 設計)。"""
+    """このセッションの名前。Claude Code を始めたフォルダの名前から、先頭の番号と記号を除いたもの(例: 10_設計 → 設計)。
+
+    同じ名前のセッションが、ほかの Claude Code で動いていれば、番号が付く(numbered_name)。
+    """
     base = os.path.basename((path or project_dir()).rstrip("/"))
-    return re.sub(r"^[\d_\-\s]+", "", base) or base
+    return numbered_name(re.sub(r"^[\d_\-\s]+", "", base) or base)
 
 
 _cg: list = []
@@ -1738,6 +1817,8 @@ def main() -> int:
     if args.mic:
         record_set("mic", args.mic)
     if args.print_mode or args.mic:
+        if args.print_mode:
+            print(f"セッション: {args.name}")  # 同じフォルダから 2 つ目を開いていれば、番号が付いている
         print("方式: キーを押している間だけ聞く(右コマンド)" if listen_mode() == "key"
               else "方式: 「以上」と言うまで聞く(マイクは開いたまま)")
         if (read_record() or {}).get("mic") == "builtin":
