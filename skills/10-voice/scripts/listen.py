@@ -660,6 +660,10 @@ HALLUCINATIONS = (
     "最後までご視聴いただきありがとうございました", "最後までご視聴ありがとうございました",
     "チャンネル登録お願いします", "チャンネル登録をお願いします", "おやすみなさい", "字幕視聴ありがとうございました",
 )
+# 短い返事の、決まった聞き間違い。区切りの全体がこれらに一致したときだけ、直す(文の一部なら直さない)。
+# イヤホンのマイクは、声の出だしを切ることがあり、「はい」の最初の音が欠けて「おい」になる。
+# あらかじめ教える語(whisper_prompt)に「はい」を足す方法は、雑音まで「はい」になったので、採らない
+SHORT_FIXES = {"おい": "はい。"}
 PROMPT_MAX_WORDS = 60   # 音声認識に教える語の上限(教えすぎると、効き目が落ちる)
 _prompt: list[str] = []
 
@@ -704,6 +708,8 @@ def transcribe(client: httpx.Client, pcm: bytes) -> str:
     bare = re.sub(rf"[{BOUNDARY}]", "", text)
     if bare in HALLUCINATIONS or (prompt and bare == re.sub(rf"[{BOUNDARY}]", "", prompt)):
         return ""  # 決まった聞き間違い、または、教えた語の並びがそのまま返ってきた
+    if bare in SHORT_FIXES:
+        return SHORT_FIXES[bare]
     return to_notation(text)
 
 
