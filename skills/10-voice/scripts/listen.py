@@ -38,6 +38,8 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
+import urllib.parse
 import wave
 
 import httpx
@@ -1561,6 +1563,81 @@ def memo_watch() -> int:
                 lock.close()
 
 
+CHROME = "Google Chrome"
+
+# Chrome で file:// を表示しているタブの一覧(番号とアドレス)。
+# 区切りは "\t" と書く(tab と書くと、Chrome の用語のタブとして扱われる)
+LIST_FILE_TABS = f'''
+tell application "{CHROME}"
+  set out to ""
+  repeat with w in windows
+    repeat with t in tabs of w
+      set u to URL of t
+      if u starts with "file://" then set out to out & (id of t as text) & "\\t" & u & linefeed
+    end repeat
+  end repeat
+  return out
+end tell
+'''
+
+
+def norm_path(path: str) -> str:
+    """実体のパスに直す。濁点の表し方(NFC と NFD)が Chrome と引数で違うことがあるので、そろえる。"""
+    return unicodedata.normalize("NFC", os.path.realpath(path))
+
+
+def close_old_tabs(path: str) -> None:
+    """同じファイルを表示している Chrome のタブを閉じる(開き直すたびにタブが増えないようにする)。
+
+    閉じるのは、アドレスがそのファイルと一致する file:// のタブだけ。Web のページには触らない。
+    Chrome が起動していなければ、何もしない(osascript が Chrome を起動してしまうため)。
+    失敗しても、開く処理は続ける。
+    """
+    try:
+        if subprocess.run(["pgrep", "-xq", CHROME], timeout=3).returncode != 0:
+            return
+        r = subprocess.run(["osascript", "-e", LIST_FILE_TABS], capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return
+        target = norm_path(path)
+        ids = []
+        for line in r.stdout.splitlines():
+            tid, _, url = line.partition("\t")
+            tid = tid.strip()
+            # アドレスの #… と ?… は無視して比べる
+            if tid.isdigit() and norm_path(urllib.parse.unquote(urllib.parse.urlsplit(url).path)) == target:
+                ids.append(tid)
+        if not ids:
+            return
+        script = f'''
+tell application "{CHROME}"
+  repeat with w in windows
+    repeat with i in {{{", ".join(ids)}}}
+      try
+        close (first tab of w whose id is i)
+      end try
+    end repeat
+  end repeat
+end tell
+'''
+        subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+_open_threads: list[threading.Thread] = []   # 開いている途中のスレッド。終わる前に、少しだけ待つ
+
+
+def open_path(path: str) -> None:
+    """ファイルや URL を開く。ファイルなら、同じファイルの古いタブを先に閉じる。"""
+    if os.path.exists(path):
+        close_old_tabs(path)
+    try:
+        subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="読み上げてから、合言葉が聞こえるまで聞き続け、文字にして出力する")
     ap.add_argument("--say", help="聞き取りの前に読み上げる文。読み上げ中に話すと割り込める")
@@ -1779,11 +1856,11 @@ def main() -> int:
 
     def open_files() -> None:
         # 見せたいファイルは、このセッションの番が来て、読み上げを始めるときに開く
+        # 古いタブを調べる間、読み上げを待たせないように、別のスレッドで開く
         for path in args.open:
-            try:
-                subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except OSError:
-                pass
+            t = threading.Thread(target=open_path, args=(path,), daemon=True)
+            t.start()
+            _open_threads.append(t)
         args.open = []
 
     def start_speaker() -> None:
@@ -2064,6 +2141,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     code = main()
+    for _t in _open_threads:   # すぐに終わる場合でも、ファイルを開き終えてから終わる
+        _t.join(timeout=10)
     # 出力を書き出してから、すぐに終わる。音の入出力の後始末が固まっていても、プログラムを残さない
     try:
         sys.stdout.flush()
