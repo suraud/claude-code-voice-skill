@@ -392,6 +392,35 @@ def write_floor(f, name: str, active: bool) -> None:
     f.flush()
 
 
+def held_by_other(name: str, holder: str, last: float, active: bool, sessions: dict) -> bool:
+    """順番を、ほかのセッションが持ち続けているか(時間切れのあと、利用者が考えている間)。
+
+    手放したセッション(away)と、会話を終えたセッション(記録にない)は、持っていない扱いにする。
+    手放すときに、順番のロックが取れず、持ち主の書き換えを省くことがあるため(release_turn)。
+    """
+    if not holder or holder == name or not active or time.time() - last >= FLOOR_HOLD_S:
+        return False
+    entry = sessions.get(holder) if isinstance(sessions, dict) else None
+    return isinstance(entry, dict) and entry.get("state") != "away"
+
+
+def lock_soon(f, wait_s: float) -> bool:
+    """順番のロックを、wait_s 秒だけ試して取る。取れなければ False(待ち続けない)。
+
+    このロックは、ほかのセッションが話している間と聞いている間、ずっと取られている。
+    無期限に待つと、ほかのセッションの聞き取りが終わるまで、戻らなくなる。
+    """
+    deadline = time.time() + wait_s
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.1)
+
+
 _cancelled = threading.Event()  # 止める指示(SIGTERM、SIGINT)を受けた
 
 
@@ -422,7 +451,7 @@ def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S, on_select: bool = False
                 raise BlockingIOError  # 置き場所の決まりで、まだ話せない
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             holder, last, active = read_floor(f)
-            others_turn = bool(holder) and holder != name and active and time.time() - last < FLOOR_HOLD_S
+            others_turn = held_by_other(name, holder, last, active, sessions)
             if not others_turn:
                 write_floor(f, name, True)
                 sessions_update(name, "talking")
@@ -440,10 +469,16 @@ def release_turn(name: str) -> None:
     """会話の順番を手放す。ほかのセッションが、待たずに話せるようになる。"""
     try:
         with open(LOCK_PATH, "a+", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            holder, _, _ = read_floor(f)
-            if holder == name:
-                write_floor(f, name, False)
+            # ほかのセッションが話している・聞いている間は、ロックが取れない。待ち続けずに、書き換えを省く。
+            # 省いても、下で away にするので、ほかのセッションは、このセッションを持ち主として扱わない(held_by_other)。
+            # 短い間だけ取る処理(知らせ、メモの見張り)と重なったときのために、少しだけ試す
+            if lock_soon(f, 2.0):
+                holder, _, _ = read_floor(f)
+                if holder == name:
+                    write_floor(f, name, False)
+    except OSError:
+        pass
+    try:
         session_set_state(name, "away")  # 席を外した扱い。次に聞き取りを始めるまで、ターンの終わりを引き止めない
     except OSError:
         pass
@@ -1583,7 +1618,7 @@ def notify() -> int:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             holder, last, active = read_floor(lock)
-            others_turn = holder and holder != name and active and time.time() - last < FLOOR_HOLD_S
+            others_turn = held_by_other(name, holder, last, active, (read_record() or {}).get("sessions") or {})
             if not others_turn and focus_of() in (None, name):
                 break  # 順番が空いた。話している間は持ち続け、ほかのセッションを待たせる
             fcntl.flock(lock, fcntl.LOCK_UN)
@@ -1877,9 +1912,9 @@ def main() -> int:
             f.write(json.dumps({"boot": boot_id(), "sessions": {}, **keep}, ensure_ascii=False))
         try:
             with open(LOCK_PATH, "a+", encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                f.seek(0)
-                f.truncate()
+                if lock_soon(f, 5.0):   # 止めた聞き取りが、ロックを放すのを少し待つ。待ち続けない
+                    f.seek(0)
+                    f.truncate()
         except OSError:
             pass
         return 0
