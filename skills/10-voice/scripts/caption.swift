@@ -43,7 +43,7 @@ let playbackPath = stateDir + "/10-voice-playback.json"
 let seekPath = stateDir + "/10-voice-seek.json"
 let voiceScript: String? = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : nil
 let restartingPath = stateDir + "/10-voice-kokoro-restarting"   // voice.sh restart-kokoro の間だけある
-let kokoroWarnBytes: UInt64 = 6 << 30   // これを超えたら、メモリの表示の色を変える
+let kokoroWarnBytes: UInt64 = 8 << 30   // これを超えたら、メモリの表示の色を変える(listen.py が、次の読み上げで自動で再起動する。KOKORO_AUTO_RESTART_BYTES と同じ)
 let memorySeconds: TimeInterval = 3     // メモリを測る間隔
 let maxShownEntries = 300  // 表示するのは直近の分だけ。ファイルには全部残る
 let allTab = "すべて"
@@ -76,7 +76,7 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("◐", "ウィンドウの色を、暗い色と明るい色で切り替える"),
         ("読み上げの位置のつまみ(左下)", "読み上げ中は進む。動かすと、その位置から読み直す。返事を待っている間だけ使える。字幕は、読み終えた部分が明るくなる"),
         ("1x / 1.25x", "読み上げの速さを切り替える。途中で押すと、少し戻って、新しい速さで読む"),
-        ("メモリ", "読み上げ(Kokoro)が使っているメモリ。使うほど増え、6GB を超えると色が変わる。押すと Kokoro を再起動して戻す(10 秒ほど。その間の読み上げは、戻るまで待つ)"),
+        ("メモリ", "読み上げ(Kokoro)が使っているメモリ。使うほど増える。8GB を超えると色が変わり、次の読み上げが始まったときに、自動で Kokoro を再起動して戻す(10 秒ほど。その間の読み上げは、戻るまで待つ)。押すと、すぐに再起動する"),
         ("⏸ 停止 / ▶ 再開", "すべてのセッションが、話すのも聞くのもやめる(会議のとき)"),
         ("×", "隠す。次の読み上げや発言でまた出る"),
         ("帯をつかむ / 右下のつまみ", "動かす / 大きさを変える"),

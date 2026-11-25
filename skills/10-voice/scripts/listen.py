@@ -89,6 +89,9 @@ PLAYBACK_PATH = os.path.expanduser("~/.voicemode/10-voice-playback.json")
 SEEK_PATH = os.path.expanduser("~/.voicemode/10-voice-seek.json")
 KOKORO_RESTARTING = os.path.expanduser("~/.voicemode/10-voice-kokoro-restarting")  # voice.sh restart-kokoro の間だけある
 KOKORO_RETRY_SECONDS = 120  # Kokoro の再起動の間、読み上げを失敗にせず待つ長さ
+KOKORO_AUTO_RESTART_BYTES = 8 << 30  # Kokoro のメモリがこれを超えたら、読み上げの音が出始めたときに自動で再起動する(caption.swift の kokoroWarnBytes と同じ)
+KOKORO_AUTO_RESTART_GAP_S = 300      # 自動の再起動を、続けて行わない間隔
+KOKORO_AUTO_RESTART_STAMP = os.path.expanduser("~/.voicemode/10-voice-kokoro-auto-restart")  # 最後に自動で再起動した時刻(ファイルの更新時刻)
 SPEAK_LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice-speak.lock")  # 読み上げの間だけ持つ。声を重ねないため
 LOCK_WAIT_S = 420    # 順番を待つ上限。超えたら、読み上げずに戻る
 MIN_LISTEN_S = 120   # 長く待ったあとでも、聞き取りに使える最低限の秒数
@@ -285,6 +288,51 @@ def session_end(name: str) -> None:
                 f.write(json.dumps(data, ensure_ascii=False))
     except (OSError, ValueError):
         pass
+
+
+def kokoro_memory_bytes() -> int | None:
+    """Kokoro(ポート 8880 で待ち受けているプロセス)が使っているメモリ。アクティビティモニタの「メモリ」と同じ値。"""
+    try:
+        out = subprocess.run(["/usr/sbin/lsof", "-tnP", "-iTCP:8880", "-sTCP:LISTEN"],
+                             capture_output=True, text=True, timeout=5).stdout.split()
+        if not out:
+            return None
+        buf = ctypes.create_string_buffer(1024)  # rusage_info_v2。ri_phys_footprint は 72 バイト目から
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        if libproc.proc_pid_rusage(int(out[0]), 2, buf) != 0:
+            return None
+        return int.from_bytes(buf.raw[72:80], sys.byteorder)
+    except Exception:
+        return None
+
+
+def auto_restart_kokoro(limit: int = KOKORO_AUTO_RESTART_BYTES) -> bool:
+    """Kokoro のメモリが増えていたら、再起動を始める(終わるのは待たない)。始めたら True。
+
+    読み上げの音が出始めたときに呼ぶ。読む音声はもう手元にあるので、読み上げは止まらない。
+    再起動の間に来た次の読み上げは、Speaker._request が、戻るまで待ってから頼み直す。
+    """
+    try:
+        if kokoro_restarting():
+            return False
+        try:
+            if time.time() - os.path.getmtime(KOKORO_AUTO_RESTART_STAMP) < KOKORO_AUTO_RESTART_GAP_S:
+                return False
+        except OSError:
+            pass
+        mem = kokoro_memory_bytes()
+        if mem is None or mem <= limit:
+            return False
+        fd = os.open(KOKORO_AUTO_RESTART_STAMP, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.close(fd)
+        os.utime(KOKORO_AUTO_RESTART_STAMP, None)
+        subprocess.Popen(
+            ["/bin/bash", os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice.sh"), "restart-kokoro"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def kokoro_restarting() -> bool:
@@ -1073,6 +1121,8 @@ class Speaker:
             if out is None:
                 return
             with speak_lock, out:
+                # 音が出始めるここで、Kokoro のメモリが増えていたら再起動する。読み上げを遅らせないよう、別のスレッドで調べる
+                threading.Thread(target=auto_restart_kokoro, daemon=True).start()
                 self._run(out, 0, True)
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
