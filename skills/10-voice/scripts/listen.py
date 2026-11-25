@@ -1571,7 +1571,7 @@ def main() -> int:
     ap.add_argument("--on-select", action="store_true", help="利用者が字幕の窓でこのセッションのタブを押すまで、読み上げも聞き取りもせずに待つ(裏の作業を待つ間に、声で話しかけられるようにする。--wait と一緒に、バックグラウンドで使う)。終わったら、話す相手の選択を外す")
     ap.add_argument("--wait", type=float, default=LOCK_WAIT_S, help=f"話す順番を待つ秒数の上限(既定: {LOCK_WAIT_S})。バックグラウンドで長く待つときに大きくする")
     ap.add_argument("--end-word", default="以上", help="発言の終わりを示す合言葉(既定: 以上)")
-    ap.add_argument("--idle", type=float, default=300, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 300)")
+    ap.add_argument("--idle", type=float, default=480, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 480)")
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
     ap.add_argument("--release", action="store_true", help="持ち続けている順番を手放して終わる(時間切れのあと、聞き取りを再開しないときに使う)")
     ap.add_argument("--end", action="store_true", help="音声での会話を終える。順番を手放し、字幕の窓のタブから消す")

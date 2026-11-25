@@ -57,7 +57,7 @@
 <path d="M210,614 L500,614 L500,658" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
 <path d="M500,614 L815,614 L815,658" fill="none" stroke="#5b6470" stroke-width="1.8" marker-end="url(#a)"/>
 <text x="193" y="646" font-size="12" fill="#1f5f33" font-weight="700" text-anchor="start">あなたが返事をした</text>
-<text x="508" y="646" font-size="12" fill="#1f5f33" font-weight="700" text-anchor="start">5 分、返事がない</text>
+<text x="508" y="646" font-size="12" fill="#1f5f33" font-weight="700" text-anchor="start">8 分、返事がない</text>
 <text x="823" y="646" font-size="12" fill="#1f5f33" font-weight="700" text-anchor="start">別の相手を選んだ</text>
 <rect x="40" y="660" width="290" height="88" rx="10" fill="#ffffff" stroke="#7d8aa0" stroke-width="1.5"/>
 <text x="185.0" y="692.0" font-size="14" fill="#1e2a3c" font-weight="700" text-anchor="middle">順番を手放す</text>
