@@ -697,6 +697,29 @@ def whisper_prompt() -> str:
     return _prompt[0]
 
 
+# 認識の調査用。このフォルダがある間だけ、聞き取った区切りごとに、音声と認識の結果を残す(Mac の中だけ)。
+# 認識の誤りを、同じ録音で比べて調べるために使う。ふだんは、フォルダを作らない(録音は残らない)。
+# 始めるとき: mkdir -m 700 ~/.voicemode/10-voice-debug  終えるとき: フォルダごと消す
+DEBUG_DIR = os.path.expanduser("~/.voicemode/10-voice-debug")
+
+
+def debug_keep(pcm: bytes, raw: str, result: str) -> None:
+    """調査用のフォルダがあれば、音声(認識に渡す前の音)と、認識の結果を残す。失敗しても、聞き取りは続ける。"""
+    try:
+        if not os.path.isdir(DEBUG_DIR):
+            return
+        stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}-{int(time.time() * 1000) % 1000:03d}"
+        fd = os.open(os.path.join(DEBUG_DIR, stamp + ".wav"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(to_wav(pcm))
+        fd = os.open(os.path.join(DEBUG_DIR, "index.tsv"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write("\t".join([stamp, session_name(), f"{len(pcm) / (RATE * 2):.2f}",
+                               " ".join(raw.split()), " ".join(result.split())]) + "\n")
+    except Exception:
+        pass
+
+
 def transcribe(client: httpx.Client, pcm: bytes) -> str:
     data = {"model": "whisper-1", "language": "ja", "response_format": "json"}
     prompt = whisper_prompt()
@@ -707,10 +730,13 @@ def transcribe(client: httpx.Client, pcm: bytes) -> str:
     text = " ".join(r.json().get("text", "").split())
     bare = re.sub(rf"[{BOUNDARY}]", "", text)
     if bare in HALLUCINATIONS or (prompt and bare == re.sub(rf"[{BOUNDARY}]", "", prompt)):
-        return ""  # 決まった聞き間違い、または、教えた語の並びがそのまま返ってきた
-    if bare in SHORT_FIXES:
-        return SHORT_FIXES[bare]
-    return to_notation(text)
+        result = ""  # 決まった聞き間違い、または、教えた語の並びがそのまま返ってきた
+    elif bare in SHORT_FIXES:
+        result = SHORT_FIXES[bare]
+    else:
+        result = to_notation(text)
+    debug_keep(pcm, text, result)
+    return result
 
 
 # 読みがな。字幕にはふつうの表記で出し、声では読みで読む。
