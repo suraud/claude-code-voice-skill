@@ -92,6 +92,7 @@ KOKORO_RETRY_SECONDS = 120  # Kokoro の再起動の間、読み上げを失敗�
 KOKORO_AUTO_RESTART_BYTES = 8 << 30  # Kokoro のメモリがこれを超えたら、読み上げの音が出始めたときに自動で再起動する(caption.swift の kokoroWarnBytes と同じ)
 KOKORO_AUTO_RESTART_GAP_S = 300      # 自動の再起動を、続けて行わない間隔
 KOKORO_AUTO_RESTART_STAMP = os.path.expanduser("~/.voicemode/10-voice-kokoro-auto-restart")  # 最後に自動で再起動した時刻(ファイルの更新時刻)
+PLAY_LOG_PATH = os.path.expanduser("~/.voicemode/10-voice-playlog.tsv")  # 読み上げ 1 回ごとの記録(声が出なかったときの調査用。文は書かない)
 SPEAK_LOCK_PATH = os.path.expanduser("~/.voicemode/10-voice-speak.lock")  # 読み上げの間だけ持つ。声を重ねないため
 LOCK_WAIT_S = 420    # 順番を待つ上限。超えたら、読み上げずに戻る
 MIN_LISTEN_S = 120   # 長く待ったあとでも、聞き取りに使える最低限の秒数
@@ -928,6 +929,8 @@ class Speaker:
         self.pending: int | None = None      # 止められた所から読み上げを続ける、という指示(バイト位置)
         self.playing = False                 # いま、音を出しているか
         self.thread: threading.Thread | None = None
+        self.t0 = time.time()                # 記録用:読み上げを頼まれた時刻
+        self.synth_s: float | None = None    # 記録用:音声を作るのにかかった秒数
         threading.Thread(target=self._synth, daemon=True).start()
 
     def _request(self, text: str, speed: float) -> bytes:
@@ -955,7 +958,48 @@ class Speaker:
             self.pcm = self._request(self.text, self.speed)
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
+        self.synth_s = time.time() - self.t0
         self.ready.set()
+
+    def _log(self, opened: float | None, started: float | None, device: str) -> None:
+        """最初の再生の結果を 1 行で残す。声が出なかったときに、どこで起きたかを見分けるため。
+
+        列: 時刻、セッション、文の長さ、合成の秒数、頼まれてから音を出し始めるまでの秒数、音声の長さ、
+        再生にかけた秒数、渡した割合、音の大きさの最大(0〜32767)、出力の機器、結果
+        """
+        try:
+            now = time.time()
+            audio_s = len(self.pcm) / (KOKORO_RATE * 2) if self.pcm else 0.0
+            peak = 0
+            if self.pcm:
+                samples = array.array("h", self.pcm[: len(self.pcm) // 2 * 2])
+                peak = max(max(samples), -min(samples))
+            if self.error:
+                result = "失敗 " + self.error[:80]
+            elif started is None:
+                result = "音を出す前に止めた"
+            elif self.cancel.is_set() or self.closed.is_set():
+                result = "途中で止めた"
+            else:
+                result = "最後まで"
+            row = [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.t0)), self.name, str(len(self.text)),
+                   "" if self.synth_s is None else f"{self.synth_s:.1f}",
+                   "" if started is None else f"{started - self.t0:.1f}",
+                   f"{audio_s:.1f}", "" if started is None else f"{now - started:.1f}",
+                   f"{self.written / max(1, len(self.pcm)):.2f}", str(peak), device, result]
+            try:
+                if os.path.getsize(PLAY_LOG_PATH) > 300_000:  # 増えすぎないよう、後ろの半分だけ残す
+                    with open(PLAY_LOG_PATH, encoding="utf-8") as f:
+                        lines = f.readlines()
+                    with open(PLAY_LOG_PATH, "w", encoding="utf-8") as f:
+                        f.writelines(lines[len(lines) // 2:])
+            except OSError:
+                pass
+            fd = os.open(PLAY_LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
+                f.write("\t".join(c.replace("\t", " ").replace("\n", " ") for c in row) + "\n")
+        except Exception:
+            pass
 
     def heard_text(self) -> str:
         """止めた時点までに読み上げた部分を、再生した長さの割合から見積もる。
@@ -1113,6 +1157,8 @@ class Speaker:
     def _play(self) -> None:
         import sounddevice as sd
 
+        started: float | None = None
+        device = ""
         try:
             self.ready.wait()
             if self.error or self.cancel.is_set():
@@ -1120,6 +1166,11 @@ class Speaker:
             speak_lock, out = self._open(sd)
             if out is None:
                 return
+            try:
+                device = str(sd.query_devices(kind="output").get("name", ""))
+            except Exception:
+                device = "不明"
+            started = time.time()
             with speak_lock, out:
                 # 音が出始めるここで、Kokoro のメモリが増えていたら再起動する。読み上げを遅らせないよう、別のスレッドで調べる
                 threading.Thread(target=auto_restart_kokoro, daemon=True).start()
@@ -1129,6 +1180,7 @@ class Speaker:
         finally:
             self.first_heard = self.heard_text()
             self.done.set()
+            self._log(None, started, device)
         # 読み終えたあと。聞き取りが続いている間は、つまみが動かされたら、その位置から読み直す
         try:
             self._report(False)
