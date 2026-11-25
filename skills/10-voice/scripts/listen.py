@@ -901,7 +901,7 @@ def whisper_prompt() -> str:
 DEBUG_DIR = os.path.expanduser("~/.voicemode/10-voice-debug")
 
 
-def debug_keep(pcm: bytes, raw: str, result: str) -> None:
+def debug_keep(pcm: bytes, raw: str, result: str, hint: str = "") -> None:
     """調査用のフォルダがあれば、音声(認識に渡す前の音)と、認識の結果を残す。失敗しても、聞き取りは続ける。"""
     try:
         if not os.path.isdir(DEBUG_DIR):
@@ -913,14 +913,27 @@ def debug_keep(pcm: bytes, raw: str, result: str) -> None:
         fd = os.open(os.path.join(DEBUG_DIR, "index.tsv"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write("\t".join([stamp, session_name(), f"{len(pcm) / (RATE * 2):.2f}",
-                               " ".join(raw.split()), " ".join(result.split())]) + "\n")
+                               " ".join(raw.split()), " ".join(result.split()), hint]) + "\n")
     except Exception:
         pass
 
 
-def transcribe(client: httpx.Client, pcm: bytes) -> str:
+CONTEXT_MIN_S = 2.0      # この長さ以上の区切りには、直前の読み上げを手がかりにする
+CONTEXT_MAX_CHARS = 200  # 手がかりにするのは、直前の読み上げの終わりの、この文字数
+
+
+def transcribe(client: httpx.Client, pcm: bytes, context: str = "") -> str:
+    """音声を文字にする。context は、直前に Claude が読み上げた文(字幕に出した表記)。
+
+    音声認識には、手がかりの文を 1 つ渡せる。ふだんは、読みがなの表の語の並び(whisper_prompt)を渡す。
+    2 秒以上の区切りで、直前の読み上げがあれば、代わりにその文を渡す。利用者の返事は、直前の話題の言葉を
+    含むことが多く、その言葉が正しく出やすくなる(利用者の録音 68 区切りで比べた。「起源」→「期限」など)。
+    両方を渡すと、手がかりの言葉が結果に混ざることがあったので、どちらか一方にする。
+    短い区切りに使わないのは、短い返事(「はい」)が聞こえなかった扱いになった例があるため。
+    """
     data = {"model": "whisper-1", "language": "ja", "response_format": "json"}
-    prompt = whisper_prompt()
+    use_context = bool(context.strip()) and len(pcm) >= CONTEXT_MIN_S * RATE * 2
+    prompt = " ".join(context.split())[-CONTEXT_MAX_CHARS:] if use_context else whisper_prompt()
     if prompt:
         data["prompt"] = prompt
     r = client.post(WHISPER_URL, files={"file": ("segment.wav", to_wav(boost(pcm)), "audio/wav")}, data=data)
@@ -933,7 +946,7 @@ def transcribe(client: httpx.Client, pcm: bytes) -> str:
         result = SHORT_FIXES[bare]
     else:
         result = to_notation(text)
-    debug_keep(pcm, text, result)
+    debug_keep(pcm, text, result, "直前の読み上げ" if use_context else "語の並び")
     return result
 
 
@@ -1991,6 +2004,7 @@ def main() -> int:
             caption(args.name, "メモ", body)
             state["memo_count"] += 1
     jobs: queue.Queue = queue.Queue()
+    said = {"text": ""}   # 直前に読み上げた文(字幕の表記)。音声認識の手がかりにする
 
     def worker() -> None:
         with httpx.Client(timeout=120) as client:
@@ -2001,7 +2015,7 @@ def main() -> int:
                         return
                     if state["reason"]:
                         continue  # 終了が決まったあとの区切りは捨てる
-                    text = transcribe(client, pcm)
+                    text = transcribe(client, pcm, said["text"])
                     if args.verbose:
                         print(f"[区切り] {text}", file=sys.stderr)
                     if not text:
@@ -2059,6 +2073,7 @@ def main() -> int:
     from_file = bool(args.file)
     lock = None
     shown_say, say, points = split_say(args.say) if args.say else (None, None, [])
+    said["text"] = shown_say or ""
     if not from_file:
         if sessions_update(args.name).get(args.name, {}).get("state") == "muted":
             # 利用者がミュートにしている(聞き取り中、または作業中に「ミュート」と言った)。話しかけない
