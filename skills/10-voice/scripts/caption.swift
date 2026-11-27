@@ -79,6 +79,7 @@ let helpSections: [(title: String, rows: [(String, String)])] = [
         ("メモリ", "読み上げ(Kokoro)が使っているメモリ。使うほど増える。8GB を超えると色が変わり、次の読み上げが始まったときに、自動で Kokoro を再起動して戻す(10 秒ほど。その間の読み上げは、戻るまで待つ)。押すと、すぐに再起動する"),
         ("⏸ 停止 / ▶ 再開", "すべてのセッションが、話すのも聞くのもやめる(会議のとき)"),
         ("×", "隠す。次の読み上げや発言でまた出る"),
+        ("メニューバーのアイコン(吹き出し)", "押すと、ウィンドウを出す・隠すを切り替える。画面の外にあるときは、画面の中に戻す"),
         ("帯をつかむ / 右下のつまみ", "動かす / 大きさを変える"),
     ]),
     ("合図音", [
@@ -903,6 +904,36 @@ final class CaptionController: NSObject {
 
     @objc func hide(_ sender: Any?) { panel.orderOut(nil) }
 
+    // メニューバーのアイコン。押すと、ウィンドウを出す・隠すを切り替える
+    var statusItem: NSStatusItem?
+    func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            if let image = NSImage(systemSymbolName: "captions.bubble", accessibilityDescription: "字幕ウィンドウ") {
+                image.isTemplate = true
+                button.image = image
+            } else {
+                button.title = "字幕"
+            }
+            button.toolTip = "字幕ウィンドウを出す・隠す"
+            button.target = self
+            button.action = #selector(toggleVisible(_:))
+        }
+        statusItem = item
+    }
+
+    @objc func toggleVisible(_ sender: Any?) {
+        if panel.isVisible { panel.orderOut(nil); return }
+        // 画面の外にあるとき(外付けの画面を外したあとなど)は、最初の位置に戻す
+        let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(panel.frame) }
+        if !onScreen, let screen = NSScreen.main ?? NSScreen.screens.first {
+            let v = screen.visibleFrame
+            let size = panel.frame.size
+            panel.setFrameOrigin(NSPoint(x: v.midX - size.width / 2, y: v.minY + 40))
+        }
+        panel.orderFrontRegardless()
+    }
+
     func parse(_ raw: String) -> [Entry] {
         raw.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
             let f = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
@@ -1121,6 +1152,7 @@ app.setActivationPolicy(.accessory)  // Dock に出さず、ほかのアプリ�
 // 最上位のコードはメインスレッドで動く。メインアクターの中として扱う
 let controller = MainActor.assumeIsolated { () -> CaptionController in
     let c = CaptionController()
+    c.setupStatusItem()
     c.refresh()
     return c
 }
