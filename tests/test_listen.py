@@ -4,6 +4,7 @@
 ホームを一時フォルダに差し替えてから listen.py を読み込むので、利用者の ~/.voicemode には触れない。
 実行は tests/run.sh から行う(単独なら: python tests/test_listen.py)。
 """
+import json
 import os
 import stat
 import sys
@@ -239,6 +240,57 @@ class Turns(unittest.TestCase):
             f.write("こわれた\tx")
             f.flush()
             self.assertEqual(L.read_floor(f), ("こわれた", 0.0, False))
+
+
+class Background(unittest.TestCase):
+    """バックグラウンドで動かす聞き取りは、時間で終わらない(終了の通知で、Claude を起こさない)。"""
+
+    def test_foreground_keeps_limits(self):
+        self.assertFalse(L.is_background(L.LOCK_WAIT_S))
+        self.assertEqual(L.background_limits(L.LOCK_WAIT_S, 480, 480), (L.LOCK_WAIT_S, 480, 480))
+
+    def test_background_never_times_out(self):
+        inf = float("inf")
+        self.assertTrue(L.is_background(21600))
+        self.assertEqual(L.background_limits(21600, 480, 480), (inf, inf, inf))
+
+
+class Context(unittest.TestCase):
+    """会話の履歴の大きさを、Claude Code のセッションの記録から読む。"""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.home, "sessions"))
+        os.makedirs(os.path.join(self.home, "projects", "-tmp-x"))
+        self.sid = "0123abcd-0000-4000-8000-000000000000"
+        with open(os.path.join(self.home, "sessions", "4242.json"), "w", encoding="utf-8") as f:
+            json.dump({"sessionId": self.sid}, f)
+
+    def write(self, rows):
+        with open(os.path.join(self.home, "projects", "-tmp-x", self.sid + ".jsonl"), "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+
+    def usage(self, a, b, c, **more):
+        return {"type": "assistant", "message": {"usage": {
+            "input_tokens": a, "cache_creation_input_tokens": b, "cache_read_input_tokens": c, "output_tokens": 9}}, **more}
+
+    def test_reads_last_main_usage(self):
+        self.write([self.usage(1, 2, 3), {"type": "user", "message": {"content": "x"}},
+                    self.usage(10, 2000, 250000), self.usage(5, 5, 5, isSidechain=True)])
+        self.assertEqual(L.context_tokens(4242, self.home), 252010)
+
+    def test_unknown_is_none(self):
+        self.assertIsNone(L.context_tokens(None, self.home))
+        self.assertIsNone(L.context_tokens(9999, self.home))   # セッションの記録がない
+        self.assertIsNone(L.context_tokens(4242, self.home))   # 会話の記録がない
+        self.write([{"type": "user"}])
+        self.assertIsNone(L.context_tokens(4242, self.home))   # 使用量がない
+
+    def test_note_only_when_large(self):
+        self.assertIsNone(L.context_note(None))
+        self.assertIsNone(L.context_note(L.CONTEXT_NOTE_TOKENS))
+        self.assertIn("約 25 万トークン", L.context_note(252010))
 
 
 class Files(unittest.TestCase):

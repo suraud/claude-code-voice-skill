@@ -29,6 +29,7 @@ import collections
 import ctypes
 import fcntl
 import io
+import glob
 import json
 import os
 import queue
@@ -445,6 +446,27 @@ def lock_soon(f, wait_s: float) -> bool:
 _cancelled = threading.Event()  # 止める指示(SIGTERM、SIGINT)を受けた
 
 
+def is_background(wait_s: float) -> bool:
+    """バックグラウンドで動かす聞き取りか(--wait に、順番待ちの上限より長い秒数が付いている)。"""
+    return wait_s > LOCK_WAIT_S
+
+
+def background_limits(wait_s: float, idle_s: float, max_s: float) -> tuple[float, float, float]:
+    """バックグラウンドで動かす聞き取りは、時間で終わらせない。戻り値は (順番を待つ秒数, 無音の上限, 聞き取りの上限)。
+
+    時間切れで終わると、Claude Code が終了の通知でセッションを起こし、利用者がいないのに、
+    会話の履歴の全部を送り直す。利用者が話す、止められる(voice.sh cancel)、のどちらかまで待つ。
+    """
+    if is_background(wait_s):
+        return float("inf"), float("inf"), float("inf")
+    return wait_s, idle_s, max_s
+
+
+def orphaned() -> bool:
+    """呼び出した側(Claude Code のシェル)が、もういない。待ち続けても、出力を受け取る相手がいない。"""
+    return os.getppid() == 1
+
+
 def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S, on_select: bool = False):
     """順番を取る。戻り値は (ロックのファイル, 直前に使ったのが別のセッションか, 待った秒数)。
 
@@ -480,6 +502,8 @@ def acquire_turn(name: str, wait_s: float = LOCK_WAIT_S, on_select: bool = False
             fcntl.flock(f, fcntl.LOCK_UN)
         except OSError:
             pass
+        if wait_s == float("inf") and orphaned():
+            _cancelled.set()  # 時間で終わらない待ちは、呼び出した側がいなくなったら終わる
         if time.time() - start >= wait_s or _cancelled.is_set():
             f.close()
             return None, False, time.time() - start
@@ -585,6 +609,69 @@ def claude_pid(sessions: dict) -> int | None:
         if named is None and os.path.basename(comm) == "claude":
             named = cur
     return named
+
+
+CONTEXT_NOTE_TOKENS = 200_000  # 会話の履歴がこれを超えたら、出力に注記を付ける
+CLAUDE_HOME = os.path.expanduser("~/.claude")
+
+
+def usage_tokens(line: str) -> int | None:
+    """セッションの記録の 1 行から、その呼び出しで送った履歴の大きさ(トークン数)を読む。該当しなければ None。"""
+    if '"usage"' not in line:
+        return None
+    try:
+        d = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(d, dict) or d.get("isSidechain"):
+        return None  # サブエージェントの呼び出しは、このセッションの履歴ではない
+    msg = d.get("message")
+    usage = msg.get("usage") if isinstance(msg, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    total = sum(int(usage.get(k) or 0) for k in
+                ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    return total or None
+
+
+def context_tokens(pid: int | None, home: str = CLAUDE_HOME) -> int | None:
+    """Claude Code のセッションの、いまの会話の履歴の大きさ(トークン数)。分からなければ None。
+
+    Claude Code は、コマンドにセッションの番号を渡さない。プロセス番号から、Claude Code が自分で書いている
+    セッションの記録(~/.claude/sessions/<プロセス番号>.json)をたどり、会話の記録の最後の使用量を読む。
+    読むのは使用量の数字だけで、会話の中身は使わない。記録の形が変わって読めなくなったら、注記を付けないだけにする。
+    """
+    if not pid:
+        return None
+    try:
+        with open(os.path.join(home, "sessions", f"{pid}.json"), encoding="utf-8") as f:
+            sid = json.load(f).get("sessionId")
+        if not isinstance(sid, str) or not re.fullmatch(r"[0-9a-fA-F-]{8,64}", sid):
+            return None
+        paths = glob.glob(os.path.join(glob.escape(home), "projects", "*", sid + ".jsonl"))
+        if not paths:
+            return None
+        with open(paths[0], "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 2_000_000))  # 終わりのほうだけ読む
+            lines = f.read().decode("utf-8", "replace").split("\n")
+    except (OSError, ValueError, AttributeError):
+        return None
+    for line in reversed(lines):
+        n = usage_tokens(line)
+        if n:
+            return n
+    return None
+
+
+def context_note(tokens: int | None, limit: int = CONTEXT_NOTE_TOKENS) -> str | None:
+    """履歴が大きいときに、出力に付ける注記。小さければ None。"""
+    if not tokens or tokens <= limit:
+        return None
+    return (f"[履歴: 会話の履歴が、約 {round(tokens / 10000)} 万トークンあります。声の 1 往復ごとに、この全部が送られます。"
+            "話題の区切り、利用者が席を外すとき、会話を終えるときに、現在地を TODO.md に書いてから、"
+            "声で「区切りがよいので、/compact を入力してください」と勧めてください"
+            "(別の話を始めるなら /clear、または新しいセッション)。話の途中では勧めません。断られたら、繰り返しません]")
 
 
 _names: dict[str, str] = {}
@@ -1942,7 +2029,7 @@ def main() -> int:
     ap.add_argument("--name", default=session_name(), help="このセッションの呼び名(既定: 作業フォルダの名前)")
     ap.add_argument("--mode", choices=("key", "word"), default=None, help="聞き取りの方式。key: キーを押している間だけ聞く。word: 合言葉が聞こえるまで聞く。指定しなければ、字幕の窓で選ばれている方式(選ばれていなければ key)。検証のとき以外は指定しない")
     ap.add_argument("--on-select", action="store_true", help="利用者が字幕の窓でこのセッションのタブを押すまで、読み上げも聞き取りもせずに待つ(裏の作業を待つ間に、声で話しかけられるようにする。--wait と一緒に、バックグラウンドで使う)。終わったら、話す相手の選択を外す")
-    ap.add_argument("--wait", type=float, default=LOCK_WAIT_S, help=f"話す順番を待つ秒数の上限(既定: {LOCK_WAIT_S})。バックグラウンドで長く待つときに大きくする")
+    ap.add_argument("--wait", type=float, default=LOCK_WAIT_S, help=f"話す順番を待つ秒数の上限(既定: {LOCK_WAIT_S})。これより大きい値(21600 など)を付けると、バックグラウンドで動かす聞き取りとして扱い、順番待ちも聞き取りも、時間では終わらない(利用者が話すか、voice.sh cancel で止めるまで待つ)")
     ap.add_argument("--end-word", default="以上", help="発言の終わりを示す合言葉(既定: 以上)")
     ap.add_argument("--idle", type=float, default=480, help="声が聞こえない状態がこの秒数続いたら打ち切る(既定: 480)")
     ap.add_argument("--max", type=float, default=480, help="聞き始めてからこの秒数で打ち切る(既定: 480)")
@@ -2011,6 +2098,13 @@ def main() -> int:
                   else "マイク: Mac 本体のマイクが見つからないので、既定の入力を使います")
         else:
             print("マイク: 既定の入力(イヤホンなど)")
+        if args.print_mode:
+            try:
+                note = context_note(context_tokens(claude_pid((read_record() or {}).get("sessions") or {})))
+            except Exception:
+                note = None
+            if note:
+                print(note)
         return 0
     if args.rename is not None:
         return session_rename(args.name, args.rename)
@@ -2131,6 +2225,8 @@ def main() -> int:
             # 利用者がミュートにしている(聞き取り中、または作業中に「ミュート」と言った)。話しかけない
             print("[ミュート: 利用者がミュートにしています。読み上げていません。声で呼びかけず、画面に「再開するときは /10-voice と入力してください」と書いて待ってください。利用者が再開を頼んだら、voice.sh on を実行してから聞き取りを始めます]")
             return 0
+        background = is_background(args.wait)
+        args.wait, args.idle, args.max = background_limits(args.wait, args.idle, args.max)
         lock, switched, waited = acquire_turn(args.name, args.wait, args.on_select)
         if lock is None and _cancelled.is_set():
             sessions_update(args.name, "working")
@@ -2143,7 +2239,7 @@ def main() -> int:
         if lock is None:
             print("[順番待ち: まだ話せません(ほかのセッションが会話中、利用者が別のセッションを話す相手に選んでいる、このセッションが「あとで」に置かれている、停止ボタンが押されている、のいずれか)。読み上げていません]")
             return 0
-        if args.wait <= LOCK_WAIT_S:  # 長く待つ指定(バックグラウンド)のときは、コマンドの制限時間を気にしない
+        if not background:  # 長く待つ指定(バックグラウンド)のときは、コマンドの制限時間を気にしない
             args.max = max(MIN_LISTEN_S, min(args.max, TOTAL_LIMIT_S - waited))
         if switched and say:
             # 別のセッションから切り替わったときは名乗る。字幕には出さない。
@@ -2340,6 +2436,9 @@ def main() -> int:
             break
         if not from_file and total_ticks % 33 == 0:  # 約 1 秒ごとに、停止ボタンを見る
             sessions_update(args.name)
+            if args.max == float("inf") and orphaned() and not talking:
+                state["reason"] = state["reason"] or "interrupted"  # 時間で終わらない聞き取りは、呼び出した側がいなくなったら終わる
+                break
             if _flags["paused"]:
                 state["reason"] = state["reason"] or "paused"
                 break
@@ -2429,10 +2528,15 @@ def main() -> int:
     if key_note:
         print(key_note)
     waiting_for = "キーは押されていません" if key_mode else f"「{args.end_word}」は聞こえていません"
+    # 時間切れのあとは、Claude を起こさずに待つ。再開のたびに、会話の履歴の全部が送られるため
+    next_step = ("利用者は、考えているか、席を外しています。「続きをどうぞ」と読み上げて再開しないでください。"
+                 "聞き取れた分を覚えておき、voice.sh listen --wait 21600 を、--say を付けずに、"
+                 "バックグラウンド(run_in_background)で実行して、ターンを終えてください。"
+                 "順番を持ったまま、利用者が話すまで待ちます(時間では終わりません)")
     idle_what = "キーが押されませんでした" if key_mode else "声が聞こえませんでした"
     notes = {
-        "idle": f"[打ち切り: {args.idle:g} 秒間、{idle_what}。{waiting_for}]",
-        "max": f"[打ち切り: 制限時間({args.max:g} 秒)に達しました。{'発言の途中かもしれません' if key_mode else waiting_for}]",
+        "idle": f"[打ち切り: {args.idle:g} 秒間、{idle_what}。{waiting_for}。{next_step}]",
+        "max": f"[打ち切り: 制限時間({args.max:g} 秒)に達しました。{'発言の途中かもしれません' if key_mode else waiting_for}。{next_step}]",
         "mute": "[ミュート: 利用者が「ミュート」と言いました。マイクを閉じました]",
         "paused": "[一時停止: 利用者が字幕の窓の停止ボタンを押しました。マイクを閉じました。再開ボタンが押されるまで、どのセッションも話しません]",
         "yield": f"[保留: 利用者が字幕の窓で、別のセッション({_flags['focus']})を話す相手に選びました。読み上げと聞き取りをやめました。利用者が選び直すまで、このセッションは話せません]",
@@ -2441,6 +2545,13 @@ def main() -> int:
     }
     if reason in notes:
         print(notes[reason])
+    if not from_file and reason in ("released", "end-word"):
+        try:
+            note = context_note(context_tokens(claude_pid((read_record() or {}).get("sessions") or {})))
+        except Exception:  # 注記のために、聞き取った発言を失わない
+            note = None
+        if note:
+            print(note)
     return 0
 
 
