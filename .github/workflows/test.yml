@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # listen.py が読み込むパッケージ。webrtcvad は、ビルド済みの配布(webrtcvad-wheels)を使う
+      - run: python3 -m pip install httpx webrtcvad-wheels
+      - name: テスト
+        run: tests/run.sh
+      - name: ホームディレクトリを含むパスが、入っていないこと
+        run: |
+          if git grep -n -E "/Us""ers/[^/[:space:]]+|/ho""me/[^/[:space:]]+" -- . ; then
+            echo "ホームディレクトリを含むパスがあります。~ で書いてください。"
+            exit 1
+          fi
