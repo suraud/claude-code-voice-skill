@@ -126,13 +126,25 @@ MUTE_PATTERN = re.compile(
 MEMO_PATTERN = re.compile(rf"^[{BOUNDARY}]*(?:メモ|めも|memo)(?![をのにはがでと帳書]|って|用紙|リ|して)[{BOUNDARY}]*(.*)$", re.IGNORECASE)
 
 
+def safe_name(name: str) -> str:
+    """セッションの名前から、フォルダの区切り(/)と先頭の「.」を除く。
+
+    名前は、メモを預かるファイルの名前に使う。「../」を含む名前で、置き場所の外を読み書きさせないため。
+    """
+    return re.sub(r"[/\\\x00]", "_", name).lstrip(".") or "_"
+
+
+def memo_path(name: str) -> str:
+    return os.path.join(MEMO_DIR, safe_name(name) + ".txt")
+
+
 def memo_add(name: str, text: str) -> None:
     """セッション宛てのメモを預かる。"""
     text = " ".join(text.split())
     if not text:
         return
     os.makedirs(MEMO_DIR, mode=0o700, exist_ok=True)
-    fd = os.open(os.path.join(MEMO_DIR, name + ".txt"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    fd = os.open(memo_path(name), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         f.write(text + "\n")
@@ -141,7 +153,7 @@ def memo_add(name: str, text: str) -> None:
 def memo_take(name: str) -> list[str]:
     """セッション宛てに預かっているメモを取り出し、預かり場所から消す。"""
     try:
-        with open(os.path.join(MEMO_DIR, name + ".txt"), "r+", encoding="utf-8") as f:
+        with open(memo_path(name), "r+", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             memos = [line.strip() for line in f if line.strip()]
             f.seek(0)
@@ -194,6 +206,15 @@ def pid_alive(pid) -> bool:
         return False
     except (OSError, ValueError, TypeError):
         return True  # 調べられないときは、動いているものとして扱う
+
+
+def is_listen(pid) -> bool:
+    """その番号のプロセスが、このスクリプトか。記録が古く、番号が別のプロセスに使い回されていたら、止めないため。"""
+    try:
+        out = subprocess.run(["ps", "-o", "command=", "-p", str(int(pid))], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return bool(re.search(r"(?:^|[/ ])" + re.escape(os.path.basename(__file__)) + r"(?: |$)", out.strip()))
 
 
 def same_boot(recorded) -> bool:
@@ -613,8 +634,8 @@ def session_rename(old: str, wanted: str) -> int:
     名前は、この Claude Code が終わるまで有効(会話を終えて、始め直しても残る)。記録の names に、
     プロセス番号ごとに持つ。ほかの動いているセッションが同じ名前を使っていたら、番号を付ける。
     """
-    wanted = " ".join(wanted.split())[:NAME_MAX].strip()
-    if not wanted:
+    wanted = safe_name(" ".join(wanted.split()))[:NAME_MAX].strip()
+    if not wanted.strip("_"):
         print("エラー: 名前を指定してください", file=sys.stderr)
         return 2
     try:
@@ -674,7 +695,7 @@ def session_rename(old: str, wanted: str) -> int:
     if final != old:
         release_turn(old)   # いままでの名前で持っていた順番を、残さない
         try:
-            os.replace(os.path.join(MEMO_DIR, old + ".txt"), os.path.join(MEMO_DIR, final + ".txt"))  # 預かったメモを引き継ぐ
+            os.replace(memo_path(old), memo_path(final))  # 預かったメモを引き継ぐ
         except OSError:
             pass
     _names.clear()
@@ -689,7 +710,7 @@ def session_name(path: str | None = None) -> str:
     利用者が名前を付けていれば(session_rename)、その名前。
     """
     base = os.path.basename((path or project_dir()).rstrip("/"))
-    return numbered_name(re.sub(r"^[\d_\-\s]+", "", base) or base)
+    return numbered_name(safe_name(re.sub(r"^[\d_\-\s]+", "", base) or base))
 
 
 _cg: list = []
@@ -920,6 +941,15 @@ def debug_keep(pcm: bytes, raw: str, result: str, hint: str = "") -> None:
 
 CONTEXT_MIN_S = 2.0      # この長さ以上の区切りには、直前の読み上げを手がかりにする
 CONTEXT_MAX_CHARS = 200  # 手がかりにするのは、直前の読み上げの終わりの、この文字数
+
+
+def local_client() -> httpx.Client:
+    """Mac 内の Whisper と話すための接続。
+
+    trust_env=False は、環境変数(HTTP_PROXY など)や macOS のプロキシの設定を使わない指定。
+    httpx は、指定しないと 127.0.0.1 あての通信もプロキシへ送るので、音声が Mac の外へ出てしまう。
+    """
+    return httpx.Client(timeout=120, trust_env=False)
 
 
 def transcribe(client: httpx.Client, pcm: bytes, context: str = "") -> str:
@@ -1188,6 +1218,7 @@ class Speaker:
                     KOKORO_URL,
                     json={"model": "tts-1", "voice": KOKORO_VOICE, "input": text, "response_format": "pcm", "speed": speed},
                     timeout=120,
+                    trust_env=False,   # プロキシの設定を使わない(下の local_client と同じ理由)
                 )
                 if r.status_code >= 500 and kokoro_restarting():
                     raise httpx.RemoteProtocolError("再起動中")
@@ -1786,7 +1817,7 @@ def memo_watch() -> int:
             text = ""
             if len(pcm) >= int(0.5 * RATE * 2):
                 try:
-                    with httpx.Client(timeout=120) as client:
+                    with local_client() as client:
                         text = transcribe(client, pcm)
                 except Exception as e:  # Whisper に届かない。預かれなかったことを音で知らせる
                     print(f"メモの見張り: 文字にできませんでした({type(e).__name__}: {e})", file=sys.stderr)
@@ -1872,8 +1903,29 @@ end tell
 _open_threads: list[threading.Thread] = []   # 開いている途中のスレッド。終わる前に、少しだけ待つ
 
 
+# --open で開けるファイルの種類。読むための文書と画像だけにする。
+# open は、アプリ(.app)やコマンドのファイル(.command)を渡すと実行するので、何でも開かない
+OPEN_EXTS = frozenset(
+    ".html .htm .md .txt .pdf .png .jpg .jpeg .gif .svg .webp .csv .tsv .json .yaml .yml .log .mmd "
+    ".xlsx .docx .pptx".split()
+)
+
+
+def openable(path: str) -> bool:
+    """--open で開いてよいものか。http と https の URL、または、種類が OPEN_EXTS にある通常のファイル。"""
+    if re.match(r"https?://[^\s/]", path, re.IGNORECASE):
+        return True
+    if re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:", path):
+        return False   # smb:、file:、アプリ独自の URL などは開かない
+    real = os.path.realpath(path)   # リンクなら、実体の種類で決める
+    return os.path.isfile(real) and os.path.splitext(real)[1].lower() in OPEN_EXTS
+
+
 def open_path(path: str) -> None:
     """ファイルや URL を開く。ファイルなら、同じファイルの古いタブを先に閉じる。"""
+    if not openable(path):
+        print(f"[開けません: {path}(開けるのは、文書や画像のファイルと、http / https の URL だけです)]", file=sys.stderr)
+        return
     if os.path.exists(path):
         close_old_tabs(path)
     try:
@@ -1934,7 +1986,7 @@ def main() -> int:
     if args.cancel:
         me = ((read_record() or {}).get("sessions") or {}).get(args.name) or {}
         lpid = me.get("lpid")
-        if lpid and lpid != os.getpid() and pid_alive(lpid):
+        if lpid and lpid != os.getpid() and pid_alive(lpid) and is_listen(lpid):
             os.kill(int(lpid), signal.SIGTERM)
             print("聞き取りを止めました")
         else:
@@ -2007,7 +2059,7 @@ def main() -> int:
     said = {"text": ""}   # 直前に読み上げた文(字幕の表記)。音声認識の手がかりにする
 
     def worker() -> None:
-        with httpx.Client(timeout=120) as client:
+        with local_client() as client:
             while True:
                 pcm = jobs.get()
                 try:

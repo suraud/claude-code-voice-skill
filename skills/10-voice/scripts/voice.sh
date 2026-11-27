@@ -3,6 +3,7 @@
 # 使い方: voice.sh on [名前] | off | status | restart-kokoro | listen [listen.py の引数] | say '文' | yomi '表記' '読み' | mic builtin|default | review [日付] | release | end | cancel | notify | stop-check | captions on|off
 # 何度実行しても同じ結果になる。
 set -u
+umask 077   # ここから作るファイル(印、ログ、字幕の窓のプログラム)を、本人だけが読めるようにする
 
 VM="$HOME/.local/bin/voicemode"
 ENV_FILE="$HOME/.voicemode/voicemode.env"
@@ -19,25 +20,66 @@ RESTARTING="$HOME/.voicemode/10-voice-kokoro-restarting"   # Kokoro を再起動
 
 die() { echo "エラー: $*" >&2; exit 1; }
 
-up() { curl -s -o /dev/null -m 2 "$1"; }
+# 動いているかの確認。プロキシの設定があっても、Mac 内に直接つなぐ
+up() { curl -s -o /dev/null -m 2 --noproxy '*' "$1"; }
+
+# このスキルの聞き取りのプロセスだけに一致させる(引数に listen.py を含むだけの、ほかのプロセスを止めないため)
+LISTEN_PAT="^$PY .*/listen\.py( |\$)"
+MEMO_PAT="^$PY .*/listen\.py --memo-watch"
 
 listen_addr() { lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $9}' | sort -u | tr '\n' ' '; }
+
+# 接続先が、この Mac の中か。ホスト名を取り出して確かめる
+# (「http://127.0.0.1:8880@外のホスト/」のように、前半だけをローカルに見せる書き方を通さない)
+local_url() {
+  local rest auth host port
+  case "$1" in http://*|https://*) ;; *) return 1 ;; esac
+  rest="${1#*://}"
+  auth="${rest%%[/?#]*}"
+  case "$auth" in *@*|"") return 1 ;; esac
+  host="${auth%%:*}"
+  port=""; [ "$host" = "$auth" ] || port="${auth#*:}"
+  case "$port" in *[!0-9]*) return 1 ;; esac
+  [ "$host" = "127.0.0.1" ] || [ "$host" = "localhost" ]
+}
+
+# 設定ファイルから、その名前の値を、書かれている順にすべて出す(export 付きの行と、引用符も読む)
+env_values() { # 名前 ファイル
+  sed -n -E "s/^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=[[:space:]]*//p" "$2" | sed -E "s/[[:space:]]+\$//; s/^[\"'](.*)[\"']\$/\\1/"
+}
+
+# VoiceMode が読む設定ファイル。ホームのもの(必須)と、いまのフォルダから上にたどって見つかるもの(あれば、そちらが優先される)
+env_files() {
+  echo "$ENV_FILE"
+  local d="$PWD"
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    [ -f "$d/.voicemode.env" ] && echo "$d/.voicemode.env"
+    [ -f "$d/.voicemode/voicemode.env" ] && [ "$d/.voicemode/voicemode.env" != "$ENV_FILE" ] && echo "$d/.voicemode/voicemode.env"
+    d="${d%/*}"
+  done
+}
 
 # 外部に音声を送らない設定になっているかを確かめる。崩れていたら起動しない。
 check_privacy() {
   [ -x "$VM" ] || die "voicemode が見つかりません: $VM"
   [ -f "$ENV_FILE" ] || die "設定ファイルがありません: $ENV_FILE"
-  local key urls
+  local key urls url file
   for key in VOICEMODE_TTS_BASE_URLS VOICEMODE_STT_BASE_URLS; do
-    urls=$(grep -E "^${key}=" "$ENV_FILE" | tail -1 | cut -d= -f2-)
-    [ -n "$urls" ] || die "$key が未設定です。既定値には OpenAI が含まれるため、ローカルの URL を設定してください"
-    if echo "$urls" | tr ',' '\n' | grep -qvE '^https?://(127\.0\.0\.1|localhost)[:/]'; then
-      die "$key にローカル以外の接続先があります: $urls"
-    fi
+    [ -n "$(env_values "$key" "$ENV_FILE")" ] || die "$key が未設定です。既定値には OpenAI が含まれるため、ローカルの URL を設定してください"
+    # 設定ファイルのすべての行と、環境変数(設定ファイルより優先される)を確かめる
+    while IFS= read -r urls; do
+      [ -n "$urls" ] || continue
+      while IFS= read -r url; do
+        local_url "$url" || die "$key にローカル以外の接続先があります: $urls"
+      done < <(printf '%s\n' "$urls" | tr ',' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+    done < <(env_files | while IFS= read -r file; do env_values "$key" "$file"; done; printf '%s\n' "${!key:-}")
   done
-  if [ -n "${OPENAI_API_KEY:-}" ] || grep -qE '^OPENAI_API_KEY=.+' "$ENV_FILE"; then
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
     die "OPENAI_API_KEY が設定されています。外部送信を防ぐため、外してください"
   fi
+  while IFS= read -r file; do
+    [ -z "$(env_values OPENAI_API_KEY "$file")" ] || die "OPENAI_API_KEY が設定されています($file)。外部送信を防ぐため、外してください"
+  done < <(env_files)
 }
 
 # 起動スクリプトの待ち受けを Mac 内だけにする。VoiceMode の更新で戻ることがあるため毎回確かめる。
@@ -73,7 +115,10 @@ start_one() { # 名前 確認用URL ポート
   fi
   case "$(listen_addr "$3")" in
     "127.0.0.1:$3 ") ;;
-    *) die "$1 の待ち受けが 127.0.0.1 だけになっていません: $(listen_addr "$3")" ;;
+    *)
+      local addr; addr=$(listen_addr "$3")
+      "$VM" service stop "$1" >/dev/null 2>&1   # ほかの端末から届く状態で、動かしたままにしない
+      die "$1 の待ち受けが 127.0.0.1 だけになっていません: $addr(サービスは止めました)" ;;
   esac
 }
 
@@ -144,7 +189,7 @@ caption_off() {
   echo "字幕: 閉じました"
 }
 
-memo_running() { pgrep -f "listen.py --memo-watch" >/dev/null 2>&1; }
+memo_running() { pgrep -f "$MEMO_PAT" >/dev/null 2>&1; }
 
 # メモの見張りを始める。Claude の作業中に、キーを押して話したメモを預かる。失敗しても会話はできる。
 memo_on() {
@@ -152,7 +197,7 @@ memo_on() {
   if memo_running; then
     # スクリプトが新しくなっていたら、動かし直す
     [ "$(dirname "$0")/listen.py" -nt "$HOME/.voicemode/10-voice-memo-watch.lock" ] || { echo "メモ: 見張りは動いています"; return 0; }
-    pkill -f "listen.py --memo-watch" >/dev/null 2>&1
+    pkill -f "$MEMO_PAT" >/dev/null 2>&1
     for _ in 1 2 3 4 5 6 7 8 9 10; do memo_running || break; sleep 0.5; done   # 古い見張りが終わるのを待つ
   fi
   touch "$HOME/.voicemode/10-voice-memo-watch.lock"
@@ -162,7 +207,7 @@ memo_on() {
 }
 
 memo_off() {
-  pkill -f "listen.py --memo-watch" >/dev/null 2>&1
+  pkill -f "$MEMO_PAT" >/dev/null 2>&1
   echo "メモ: 見張りを止めました"
 }
 
@@ -182,10 +227,10 @@ case "${1:-}" in
   off)
     # 動いている聞き取りを、すべて止める(ほかのセッションが、裏で順番を待っているものも含む)。
     # 止めないと、サービスを止めたあとも、マイクを開いたまま、話す順番を持ち続ける
-    if pgrep -f "listen.py" >/dev/null 2>&1; then
-      pkill -TERM -f "listen.py" >/dev/null 2>&1
-      for _ in 1 2 3 4 5 6; do pgrep -f "listen.py" >/dev/null 2>&1 || break; sleep 0.5; done
-      pkill -KILL -f "listen.py" >/dev/null 2>&1
+    if pgrep -f "$LISTEN_PAT" >/dev/null 2>&1; then
+      pkill -TERM -f "$LISTEN_PAT" >/dev/null 2>&1
+      for _ in 1 2 3 4 5 6; do pgrep -f "$LISTEN_PAT" >/dev/null 2>&1 || break; sleep 0.5; done
+      pkill -KILL -f "$LISTEN_PAT" >/dev/null 2>&1
       echo "聞き取り: 動いていたものを止めました"
     fi
     [ -x "$PY" ] && "$PY" "$(dirname "$0")/listen.py" --reset 2>/dev/null   # セッションの記録と順番を、空にする
